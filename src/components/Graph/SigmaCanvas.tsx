@@ -42,6 +42,32 @@ import { ContextMenu } from "./ContextMenu";
 
 // ... existing imports
 
+/**
+ * Layout 調參筆記（只影響「展開」後新顯示的 structural 子節點 x/y，不改 hidden/展開/互動邏輯）
+ *
+ * 位置：`handleExpandNode`
+ *
+ * 目的：Structure（layered）模式展開時，避免子節點與父節點（或父節點 label）視覺重疊。
+ *
+ * layered 模式參數（往父節點右側扇出）：
+ * - `minDx`：父→子最小 X 位移（越大越往右、更不容易重疊）
+ * - `yStep`：同一批子節點彼此的 Y 基準間距（越大越分散）
+ * - Y 位移公式：`yOffset = (index - mid) * (yStep + childSize * 4)`
+ *   - `index - mid`：讓子節點以父節點為中心上下對稱分佈；子節點越多，最上/最下的偏移會被放大
+ *   - `childSize * 4`：依子節點大小追加的 Y 間距（大節點彼此留更大縫隙），因此 `yStep` 的變化會被成倍放大
+ * - X 目標公式：`desiredX = parentX + minDx + childSize * 8`
+ *   - `minDx`：保底把子節點推到父節點右側，避免父節點/label 視覺重疊
+ *   - `childSize * 8`：依子節點大小再多推一些（大節點推更遠）
+ * - `minSeparation`：用來判斷是否需要重排 Y（若子節點離父節點太近才重排 Y；X 推移不受此限制）
+ *
+ * 非 layered（目前用環狀散開）參數：
+ * - `baseRadius`：第一圈半徑（越大越遠離父節點）
+ * - `ringGap`：每一圈半徑增量（越大圈與圈距離越大）
+ * - `maxPerRing`：每圈最多放幾個子節點（越小越容易長出多圈、但每圈更稀疏）
+ */
+const readNumber = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
+
 export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   const isBigData = nodes.length > 2000;
   const graph = useMemo(() => buildGraph(nodes, edges, isBigData), [edges, isBigData, nodes]);
@@ -87,16 +113,90 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
       if (sigmaRef.current) sigmaRef.current.refresh();
   }, [graph]);
 
-  const handleExpandNode = useCallback((nodeId: string) => {
+	  const handleExpandNode = useCallback((nodeId: string) => {
+	      const newlyRevealed: string[] = [];
+	      const structuralChildren: string[] = [];
+
       // Show structural children
-      graph.forEachOutEdge(nodeId, (_edge, attributes, _source, target) => {
-          if (attributes.edgeType === 'structural') {
-              graph.setNodeAttribute(target, "hidden", false);
-          }
-      });
+	      graph.forEachOutEdge(nodeId, (_edge, attributes, _source, target) => {
+	          if (attributes.edgeType !== "structural") return;
+	          const wasHidden = graph.getNodeAttribute(target, "hidden") === true;
+	          graph.setNodeAttribute(target, "hidden", false);
+	          structuralChildren.push(target);
+	          if (wasHidden) newlyRevealed.push(target);
+	      });
+
+	      if (structuralChildren.length > 0) {
+	        const parentX = readNumber(graph.getNodeAttribute(nodeId, "x")) ?? 0;
+	        const parentY = readNumber(graph.getNodeAttribute(nodeId, "y")) ?? 0;
+	        const parentSize = readNumber(graph.getNodeAttribute(nodeId, "size")) ?? 10;
+
+	        const minSeparation = Math.max(120, parentSize * 12 );
+
+        const shouldReposition = (childId: string): boolean => {
+          const childX = readNumber(graph.getNodeAttribute(childId, "x"));
+          const childY = readNumber(graph.getNodeAttribute(childId, "y"));
+          if (childX === null || childY === null) return true;
+          const dx = childX - parentX;
+          const dy = childY - parentY;
+          return Math.sqrt(dx * dx + dy * dy) < minSeparation;
+        };
+
+	        if (layoutMode === "layered") {
+	          const candidates = structuralChildren.filter(
+	            (childId) => graph.getNodeAttribute(childId, "hidden") !== true,
+	          );
+
+	          candidates.sort((a, b) => {
+	            const ay = readNumber(graph.getNodeAttribute(a, "y")) ?? 0;
+	            const by = readNumber(graph.getNodeAttribute(b, "y")) ?? 0;
+	            return ay - by;
+	          });
+
+	          const minDx = Math.max(520, parentSize * 24);
+	          const yStep = 150;
+	          const mid = (candidates.length - 1) / 2;
+
+	          candidates.forEach((childId, index) => {
+	            const childSize = readNumber(graph.getNodeAttribute(childId, "size")) ?? 8;
+	            const desiredX = parentX + minDx + childSize * 8;
+
+	            const childX = readNumber(graph.getNodeAttribute(childId, "x"));
+	            const childY = readNumber(graph.getNodeAttribute(childId, "y"));
+
+	            if (childX === null || childX < desiredX) {
+	              graph.setNodeAttribute(childId, "x", desiredX);
+	            }
+
+	            if (childY === null || shouldReposition(childId)) {
+	              const yOffset = (index - mid) * (yStep + childSize * 4);
+	              graph.setNodeAttribute(childId, "y", parentY + yOffset);
+	            }
+	          });
+	        } else {
+	          const maxPerRing = 12;
+	          const ringGap = 140;
+	          const baseRadius = Math.max(140, parentSize * 14);
+
+	          newlyRevealed.forEach((childId, index) => {
+            if (!shouldReposition(childId)) return;
+            const ringIndex = Math.floor(index / maxPerRing);
+            const indexInRing = index % maxPerRing;
+            const countInRing = Math.min(maxPerRing, newlyRevealed.length - ringIndex * maxPerRing);
+            const angle = (indexInRing / Math.max(1, countInRing)) * Math.PI * 2;
+
+          const childSize = readNumber(graph.getNodeAttribute(childId, "size")) ?? 8;
+          const ringRadius = baseRadius + ringIndex * ringGap + childSize * 6;
+
+          graph.setNodeAttribute(childId, "x", parentX + Math.cos(angle) * ringRadius);
+          graph.setNodeAttribute(childId, "y", parentY + Math.sin(angle) * ringRadius);
+          });
+        }
+      }
+
       // Force refresh to ensure edges are re-evaluated
       if (sigmaRef.current) sigmaRef.current.refresh();
-  }, [graph]);
+  }, [graph, layoutMode]);
 
   const settings = useMemo(() => ({
     renderEdgeLabels: false,
