@@ -39,6 +39,7 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 const EDGE_LABEL_SHOW_MAX_CAMERA_RATIO = 1.8;
 
 type LayoutMode = "layered" | "radial";
+type ExpandMode = "structure" | "circle";
 
 import type Sigma from "sigma";
 import { ContextMenu } from "./ContextMenu";
@@ -78,7 +79,9 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   const [hoveredNode, setHoveredNode] = useState<{ node: ISigmaNode; x: number; y: number } | null>(null);
   const hoveredEdgeIdRef = useRef<string | null>(null);
   const [layoutMode] = useState<LayoutMode>("layered");
+  const [expandMode, setExpandMode] = useState<ExpandMode>("structure");
   const [isInitialLayoutReady, setIsInitialLayoutReady] = useState(false);
+  const [rendererKey, setRendererKey] = useState(0);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
@@ -92,6 +95,15 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   useEffect(() => {
     setIsInitialLayoutReady(false);
   }, [graph]);
+
+  useEffect(() => {
+    setRendererKey((prev) => prev + 1);
+    setIsInitialLayoutReady(false);
+  }, [expandMode]);
+
+  useEffect(() => {
+    sigmaRef.current = null;
+  }, [rendererKey]);
 
   const handleHover = useCallback((node: ISigmaNode | null, event?: MouseEvent) => {
     if (!node || !event) {
@@ -138,9 +150,9 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
       if (sigmaRef.current) sigmaRef.current.refresh();
   }, [graph]);
 
-	  const handleExpandNode = useCallback((nodeId: string) => {
-	      const newlyRevealed: string[] = [];
-	      const structuralChildren: string[] = [];
+		  const handleExpandNode = useCallback((nodeId: string) => {
+		      const newlyRevealed: string[] = [];
+		      const structuralChildren: string[] = [];
 
       // Show structural children
 	      graph.forEachOutEdge(nodeId, (_edge, attributes, _source, target) => {
@@ -167,7 +179,24 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
           return Math.sqrt(dx * dx + dy * dy) < minSeparation;
         };
 
-	        if (layoutMode === "layered") {
+	        if (expandMode === "circle" && newlyRevealed.length > 0) {
+	          const childSizes = newlyRevealed.map(
+	            (childId) => readNumber(graph.getNodeAttribute(childId, "size")) ?? 8,
+	          );
+	          const avgChildSize = childSizes.reduce((sum, n) => sum + n, 0) / Math.max(1, childSizes.length);
+	          const baseRadius = Math.max(300, parentSize * 28);
+	          const densityBoost = Math.sqrt(newlyRevealed.length) * 130;
+	          const radius = baseRadius + densityBoost + avgChildSize * 6;
+
+	          newlyRevealed.forEach((childId, index) => {
+	            const n = newlyRevealed.length;
+	            const angle = (index / Math.max(1, n)) * Math.PI * 2 - Math.PI / 2;
+	            const childSize = readNumber(graph.getNodeAttribute(childId, "size")) ?? 8;
+	            const r = radius + childSize * 8;
+	            graph.setNodeAttribute(childId, "x", parentX + Math.cos(angle) * r);
+	            graph.setNodeAttribute(childId, "y", parentY + Math.sin(angle) * r);
+	          });
+	        } else if (layoutMode === "layered") {
 	          const candidates = structuralChildren.filter(
 	            (childId) => graph.getNodeAttribute(childId, "hidden") !== true,
 	          );
@@ -219,9 +248,9 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
         }
       }
 
-      // Force refresh to ensure edges are re-evaluated
-      if (sigmaRef.current) sigmaRef.current.refresh();
-  }, [graph, layoutMode]);
+	      // Force refresh to ensure edges are re-evaluated
+	      if (sigmaRef.current) sigmaRef.current.refresh();
+	  }, [expandMode, graph, layoutMode]);
 
   const settings = useMemo(() => ({
     renderEdgeLabels: true,
@@ -271,6 +300,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   return (
     <div className="graph-container" onClick={closeContextMenu}>
       <SigmaContainer
+        key={rendererKey}
         style={{
           width: "100%",
           height: "100%",
@@ -312,6 +342,37 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
             onLayoutStop={handleLayoutStop}
           />
         )}
+
+        <div style={{ position: "absolute", top: 10, right: 10, zIndex: 40, display: "flex", gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => setExpandMode("structure")}
+            style={{
+              padding: "6px 12px",
+              background: expandMode === "structure" ? "#111827" : "rgba(255,255,255,0.85)",
+              color: expandMode === "structure" ? "#fff" : "#111827",
+              border: "1px solid rgba(0,0,0,0.18)",
+              borderRadius: 8,
+              cursor: "pointer",
+            }}
+          >
+            Structure
+          </button>
+          <button
+            type="button"
+            onClick={() => setExpandMode("circle")}
+            style={{
+              padding: "6px 12px",
+              background: expandMode === "circle" ? "#111827" : "rgba(255,255,255,0.85)",
+              color: expandMode === "circle" ? "#fff" : "#111827",
+              border: "1px solid rgba(0,0,0,0.18)",
+              borderRadius: 8,
+              cursor: "pointer",
+            }}
+          >
+            Circle
+          </button>
+        </div>
 
         <ControlsContainer position="bottom-right">
           <ZoomControl />
