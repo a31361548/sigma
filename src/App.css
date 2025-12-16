@@ -2,9 +2,11 @@
   position: relative;
   width: 100vw;
   height: 100vh;
-  background: radial-gradient(circle at top, rgba(59, 130, 246, 0.25), transparent 55%) #0f172a;
-  color: #f8fafc;
+  background: #f8fafc;
+  color: #0f172a;
   overflow: hidden;
+  isolation: isolate;
+  --sigma-background-color: transparent;
 }
 
 .panel {
@@ -91,6 +93,34 @@
 .graph-container {
   position: absolute;
   inset: 0;
+  z-index: 1;
+}
+
+.graph-container::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(70vw, 1100px);
+  height: min(70vh, 700px);
+  background-image: url("/image/image.png");
+  background-size: min(40vw, 360px) auto;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: 0.08;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.graph-container > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Sigma canvas 預設會顯示白底，這會蓋掉 app 的背景圖；強制透明讓背景水印可見 */
+.graph-container canvas {
+  background: transparent !important;
 }
 
 .graph-tooltip {
