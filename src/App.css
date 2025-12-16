@@ -1,0 +1,106 @@
+.app-container {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  background: radial-gradient(circle at top, rgba(59, 130, 246, 0.25), transparent 55%) #0f172a;
+  color: #f8fafc;
+  overflow: hidden;
+}
+
+.panel {
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.5);
+}
+
+.panel.compact {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.5rem;
+}
+
+.icon-button {
+  background: transparent;
+  border: none;
+  color: #cbd5f5;
+  padding: 0.35rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.icon-button:hover {
+  background: rgba(148, 163, 184, 0.2);
+  color: #fff;
+}
+
+.icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.data-source-toggle {
+  position: absolute;
+  top: 1.5rem;
+  left: 1.5rem;
+  z-index: 20;
+}
+
+.toggle-button {
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.75rem;
+  padding: 0.45rem 0.75rem;
+  color: #cbd5f5;
+  min-width: 140px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.45);
+}
+
+.toggle-button.active {
+  border-color: #60a5fa;
+  color: #fff;
+  background: rgba(59, 130, 246, 0.2);
+}
+
+.toggle-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.toggle-desc {
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.hidden-input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+}
+
+.graph-container {
+  position: absolute;
+  inset: 0;
+}
+
+.graph-tooltip {
+  position: fixed;
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  padding: 0.35rem 0.6rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  color: #f8fafc;
+  pointer-events: none;
+  z-index: 60;
+}
