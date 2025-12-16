@@ -30,6 +30,7 @@ export const ForceAtlas2Layout = ({ nodeCount, onLayoutStop }: ForceAtlas2Layout
           edgeWeightInfluence: 1.5,
         },
       });
+      sigma.refresh();
       if (onLayoutStop) onLayoutStop();
     } catch (error) {
       console.error("ForceAtlas2 assign failed:", error);

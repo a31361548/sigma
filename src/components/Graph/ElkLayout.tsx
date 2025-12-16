@@ -16,10 +16,13 @@ export const ElkLayout = ({ layoutType = "layered", onLayoutStop, isLayoutActive
   const sigma = useSigma();
   const graph = sigma.getGraph() as unknown as DirectedGraphLike;
   const layoutRunning = useRef(false);
+  const layoutRunId = useRef(0);
 
   useEffect(() => {
     if (!isLayoutActive || graph.order === 0 || layoutRunning.current) return;
 
+    layoutRunId.current += 1;
+    const runId = layoutRunId.current;
     layoutRunning.current = true;
 
     void (async () => {
@@ -33,6 +36,8 @@ export const ElkLayout = ({ layoutType = "layered", onLayoutStop, isLayoutActive
           layoutType,
         });
 
+        if (layoutRunId.current !== runId) return;
+
         placed.forEach(({ nodeId, x, y }) => {
           graph.setNodeAttribute(nodeId, "x", x);
           graph.setNodeAttribute(nodeId, "y", y);
@@ -42,10 +47,14 @@ export const ElkLayout = ({ layoutType = "layered", onLayoutStop, isLayoutActive
       } catch (err) {
         console.error("ELK Layout Error:", err);
       } finally {
-        layoutRunning.current = false;
+        if (layoutRunId.current === runId) layoutRunning.current = false;
       }
     })();
 
+    return () => {
+      layoutRunId.current += 1;
+      layoutRunning.current = false;
+    };
   }, [graph, layoutType, onLayoutStop, sigma, isLayoutActive]);
 
   return null;

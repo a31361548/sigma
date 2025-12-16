@@ -10,10 +10,10 @@ import {
 import Graph from "graphology";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import type { ISigmaEdge, ISigmaNode, NodePayload } from "../../interfaces/mock/IMockData";
-import { ForceAtlas2Layout } from "./ForceAtlas2Layout";
 import { ElkLayout } from "./ElkLayout";
 import { GraphSearch } from "../Operations/GraphSearch";
 import drawLabel from "../../utils/sigma/drawLabel";
+import { drawStraightEdgeLabel } from "sigma/rendering";
 
 
 interface SigmaCanvasProps {
@@ -35,10 +35,14 @@ const edgeColorMap = {
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-type LayoutMode = "force" | "layered" | "radial";
+// Edge label 顯示規則：hover 一定顯示；沒 hover 時則在鏡頭夠近才顯示（ratio 越小代表越 zoom-in）
+const EDGE_LABEL_SHOW_MAX_CAMERA_RATIO = 1.8;
+
+type LayoutMode = "layered" | "radial";
 
 import type Sigma from "sigma";
 import { ContextMenu } from "./ContextMenu";
+import { NodeDetailPanel } from "./NodeDetailPanel";
 
 // ... existing imports
 
@@ -72,14 +76,22 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   const isBigData = nodes.length > 2000;
   const graph = useMemo(() => buildGraph(nodes, edges, isBigData), [edges, isBigData, nodes]);
   const [hoveredNode, setHoveredNode] = useState<{ node: ISigmaNode; x: number; y: number } | null>(null);
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>("force");
+  const hoveredEdgeIdRef = useRef<string | null>(null);
+  const [layoutMode] = useState<LayoutMode>("layered");
+  const [isInitialLayoutReady, setIsInitialLayoutReady] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
+  const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
 
   // Fix: Stabilize this callback to prevent ElkLayout from re-running on every render (e.g. hover)
   const handleLayoutStop = useCallback(() => {
-    // Layout calculation finished
+    setIsInitialLayoutReady(true);
+    if (sigmaRef.current) sigmaRef.current.refresh();
   }, []);
+
+  useEffect(() => {
+    setIsInitialLayoutReady(false);
+  }, [graph]);
 
   const handleHover = useCallback((node: ISigmaNode | null, event?: MouseEvent) => {
     if (!node || !event) {
@@ -88,6 +100,15 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
       setHoveredNode({ node, x: event.clientX, y: event.clientY });
     }
   }, []);
+
+  const handleEdgeHoverChange = useCallback((edgeId: string | null) => {
+    hoveredEdgeIdRef.current = edgeId;
+    if (sigmaRef.current) sigmaRef.current.refresh();
+  }, []);
+
+	  useEffect(() => {
+	    if (sigmaRef.current) sigmaRef.current.refresh();
+	  }, [layoutMode]);
 
   const handleRightClickNode = useCallback((event: any) => {
       event.event.original.preventDefault();
@@ -100,6 +121,10 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
 
   const closeContextMenu = useCallback(() => {
       setContextMenu(null);
+  }, []);
+
+  const closeDetailPanel = useCallback(() => {
+    setDetailNodeId(null);
   }, []);
 
   const handleHideNode = useCallback((nodeId: string) => {
@@ -199,11 +224,15 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   }, [graph, layoutMode]);
 
   const settings = useMemo(() => ({
-    renderEdgeLabels: false,
+    renderEdgeLabels: true,
+    enableEdgeEvents: true,
     minCameraRatio: 0.1,
     maxCameraRatio: 500,
     labelDensity: 0.07,
     labelRenderedSizeThreshold: 0, // Force show all labels
+    labelColor: { color: "#000000" },
+    edgeLabelColor: { color: "#000000" },
+    defaultDrawEdgeLabel: drawStraightEdgeLabel,
     // @ts-ignore: Sigma v3 supports labelRenderer but type might be missing in @react-sigma settings
     labelRenderer: drawLabel,
     nodeReducer: (_node: string, data: any) => {
@@ -228,6 +257,13 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
        if (sourceHidden || targetHidden) {
            return { ...data, hidden: true, size: 0 };
        }
+
+       const cameraRatio = sigmaRef.current?.getCamera().getState().ratio;
+       const isZoomClose =
+         typeof cameraRatio === "number" && cameraRatio <= EDGE_LABEL_SHOW_MAX_CAMERA_RATIO;
+       const shouldShowLabel = isZoomClose || hoveredEdgeIdRef.current === edge;
+       if (!shouldShowLabel) return { ...data, label: "" };
+
        return data;
     }
   }), [graph]);
@@ -235,14 +271,23 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   return (
     <div className="graph-container" onClick={closeContextMenu}>
       <SigmaContainer
-        style={{ width: "100%", height: "100%" }}
+        style={{
+          width: "100%",
+          height: "100%",
+          opacity: isInitialLayoutReady ? 1 : 0,
+          transition: "opacity 120ms ease",
+          pointerEvents: isInitialLayoutReady ? "auto" : "none",
+        }}
         settings={settings}
       >
         <GraphEvents
           graph={graph}
           onHoverChange={handleHover}
+          onEdgeHoverChange={handleEdgeHoverChange}
           onRightClickNode={handleRightClickNode}
-          setSigma={(s) => { sigmaRef.current = s; }}
+          setSigma={(s) => {
+            sigmaRef.current = s;
+          }}
         />
         
         <GraphSearch />
@@ -255,14 +300,11 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
                 onClose={closeContextMenu}
                 onHide={handleHideNode}
                 onExpand={handleExpandNode}
+                onShowDetails={(id) => setDetailNodeId(id)}
             />
         )}
 {/* ... existing layouts */}
 
-        {layoutMode === "force" && (
-          <ForceAtlas2Layout nodeCount={nodes.length} />
-        )}
-        
         {(layoutMode === "layered" || layoutMode === "radial") && (
           <ElkLayout 
             layoutType={layoutMode} 
@@ -271,26 +313,18 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
           />
         )}
 
-        <div style={{ position: "absolute", top: 10, right: 10, zIndex: 10, display: "flex", gap: "8px" }}>
-            <button 
-              onClick={() => setLayoutMode("force")}
-              style={{ padding: "6px 12px", background: layoutMode === "force" ? "#333" : "#fff", color: layoutMode === "force" ? "#fff" : "#333", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer" }}
-            >
-              Force
-            </button>
-            <button 
-              onClick={() => setLayoutMode("layered")}
-              style={{ padding: "6px 12px", background: layoutMode === "layered" ? "#333" : "#fff", color: layoutMode === "layered" ? "#fff" : "#333", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer" }}
-            >
-              Structure (Layered)
-            </button>
-        </div>
-
         <ControlsContainer position="bottom-right">
           <ZoomControl />
           <FullScreenControl />
         </ControlsContainer>
       </SigmaContainer>
+      {detailNodeId && (
+        <NodeDetailPanel
+          title="資料詳情"
+          payload={(graph.getNodeAttribute(detailNodeId, "payload") as ISigmaNode | undefined)?.data ?? null}
+          onClose={closeDetailPanel}
+        />
+      )}
       {hoveredNode && (
         <div className="graph-tooltip" style={{ top: hoveredNode.y + 8, left: hoveredNode.x + 8 }}>
           {hoveredNode.node.label}
@@ -303,11 +337,12 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
 interface GraphEventsProps {
   graph: Graph;
   onHoverChange: (node: ISigmaNode | null, event?: MouseEvent) => void;
+  onEdgeHoverChange?: (edgeId: string | null) => void;
   onRightClickNode?: (event: any) => void;
   setSigma?: (sigma: Sigma) => void;
 }
 
-const GraphEvents = ({ graph, onHoverChange, onRightClickNode, setSigma }: GraphEventsProps) => {
+const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode, setSigma }: GraphEventsProps) => {
   const loadGraph = useLoadGraph();
   const registerEvents = useRegisterEvents();
   const sigma = useSigma();
@@ -327,6 +362,9 @@ const GraphEvents = ({ graph, onHoverChange, onRightClickNode, setSigma }: Graph
   useEffect(() => {
     // Force set all possible label rendering settings to our custom function
     const rendererSettings = {
+        renderEdgeLabels: true,
+        enableEdgeEvents: true,
+        defaultDrawEdgeLabel: drawStraightEdgeLabel,
         labelRenderer: drawLabel,
         hoverRenderer: drawLabel,
         defaultDrawNodeLabel: drawLabel,
@@ -395,6 +433,12 @@ const GraphEvents = ({ graph, onHoverChange, onRightClickNode, setSigma }: Graph
         sigma.getGraph().setNodeAttribute(e.node, "highlighted", true);
         sigma.getCamera().disable();
       },
+      enterEdge(e) {
+        if (onEdgeHoverChange) onEdgeHoverChange(e.edge);
+      },
+      leaveEdge() {
+        if (onEdgeHoverChange) onEdgeHoverChange(null);
+      },
       rightClickNode(e) {
           if (onRightClickNode) onRightClickNode(e);
       },
@@ -409,7 +453,7 @@ const GraphEvents = ({ graph, onHoverChange, onRightClickNode, setSigma }: Graph
         }
       },
     });
-  }, [draggedNode, graph, isDragging, onHoverChange, registerEvents, sigma, onRightClickNode]);
+  }, [draggedNode, graph, isDragging, onHoverChange, onEdgeHoverChange, registerEvents, sigma, onRightClickNode]);
 
   return null;
 };
@@ -452,21 +496,22 @@ const buildGraph = (nodes: ISigmaNode[], edges: ISigmaEdge[], isBigData: boolean
     });
   });
 
-  edges.forEach((edge) => {
-    const isTrans = edge.data?.type === "transactional";
-    const color = isTrans ? edgeColorMap.transactional : edgeColorMap.structural;
-    if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) return;
-    if (graph.hasEdge(edge.id) || graph.hasDirectedEdge(edge.source, edge.target)) return;
-    try {
-      graph.addEdgeWithKey(edge.id, edge.source, edge.target, {
-        color,
-        size: isTrans ? 3 : 1,
-        label: edge.label,
-        type: "arrow",
-        weight: isTrans ? 10 : 0.05,
-        zIndex: isTrans ? 10 : 0,
-        edgeType: edge.data?.type || "structural",
-      });
+	  edges.forEach((edge) => {
+	    const isTrans = edge.data?.type === "transactional";
+	    const color = isTrans ? edgeColorMap.transactional : edgeColorMap.structural;
+	    if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) return;
+	    if (graph.hasEdge(edge.id) || graph.hasDirectedEdge(edge.source, edge.target)) return;
+	    const fallbackLabel = isTrans ? "交易" : "結構";
+	    try {
+	      graph.addEdgeWithKey(edge.id, edge.source, edge.target, {
+	        color,
+	        size: isTrans ? 3 : 1,
+	        label: edge.label ?? fallbackLabel,
+	        type: "arrow",
+	        weight: isTrans ? 10 : 0.05,
+	        zIndex: isTrans ? 10 : 0,
+	        edgeType: edge.data?.type || "structural",
+	      });
     } catch (error) {
       // Edge already exists; ignore
     }
