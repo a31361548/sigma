@@ -1,63 +1,122 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "@react-sigma/core/lib/style.css";
 import { SigmaCanvas } from "./components/Graph/SigmaCanvas";
 import { DataSourceToggle, type DataSourceType } from "./components/Operations/DataSourceToggle";
-import { MockDataGenerator } from "./services/MockDataGenerator";
 import { useDiagram } from "./hooks/useDiagram";
 import type { IMockGeneratorConfig } from "./interfaces/mock/IMockGenerator";
-import type { IGraphData, ISigmaNode } from "./interfaces/mock/IMockData";
+import type { IGraphData } from "./interfaces/mock/IMockData";
 
 const config: IMockGeneratorConfig = {
-  advisorCount: 50,
+  advisorCount: 200,
   clientsPerAdvisor: { min: 3, max: 8 },
   accountsPerClient: { min: 2, max: 5 },
   transactionsPerAccount: 0,
   fixedTransactionsPerAccount: 0,
 };
 
+const average = (value: number | { min: number; max: number }): number => {
+  if (typeof value === "number") return value;
+  return (value.min + value.max) / 2;
+};
+
+const estimateMockNodeCount = (cfg: IMockGeneratorConfig): number => {
+  const advisors = typeof cfg.advisorCount === "number" ? cfg.advisorCount : average(cfg.advisorCount);
+  const clientsPerAdvisor = average(cfg.clientsPerAdvisor);
+  const portfoliosPerClient = average(cfg.accountsPerClient);
+  const accountsPerPortfolio = 2;
+  const clientCount = advisors * clientsPerAdvisor;
+  const portfolioCount = clientCount * portfoliosPerClient;
+  const accountCount = portfolioCount * accountsPerPortfolio;
+  return Math.round(advisors + clientCount + portfolioCount + accountCount);
+};
+
+const BIG_GRAPH_NODE_THRESHOLD = 20000;
+
 function App() {
-  const [dataSource, setDataSource] = useState<DataSourceType>("mock");
+  const [dataSource, setDataSource] = useState<DataSourceType>(() =>
+    estimateMockNodeCount(config) >= BIG_GRAPH_NODE_THRESHOLD ? "json" : "mock",
+  );
   const [initialData, setInitialData] = useState<IGraphData>({ nodes: [], edges: [] });
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const dataSourceRef = useRef<DataSourceType>(dataSource);
+  const workerRef = useRef<Worker | null>(null);
+  const requestIdRef = useRef(0);
+
+  const requestData = useCallback((source: DataSourceType) => {
+    const worker = workerRef.current;
+    if (!worker) return;
+
+    requestIdRef.current += 1;
+    const requestId = requestIdRef.current;
+
+    if (source === "json") {
+      worker.postMessage({ id: requestId, kind: "loadJson", url: "/fakedata.json" });
+      return;
+    }
+    worker.postMessage({ id: requestId, kind: "generate", config });
+  }, []);
 
   useEffect(() => {
-    const loadData = async () => {
-      setIsLoading(true);
-      try {
-        if (dataSource === "json") {
-          // 暫時取消對 fakedata.json 的引用
-          /*
-          const response = await fetch("/fakedata.json");
-          if (!response.ok) throw new Error("fakedata.json not found");
-          const data = (await response.json()) as IGraphData;
-          if (!Array.isArray(data.nodes) || !Array.isArray(data.edges)) {
-            throw new Error("Invalid data format");
-          }
-          const strippedNodes = data.nodes.map((node) => {
-            const clone = node as ISigmaNode;
-            delete (clone as Partial<ISigmaNode>).x;
-            delete (clone as Partial<ISigmaNode>).y;
-            return clone;
-          });
-          setInitialData({ nodes: strippedNodes, edges: data.edges });
-          */
-           console.warn("JSON mode is temporarily disabled. Switching to mock data.");
-           const generator = new MockDataGenerator(config);
-           setInitialData(generator.generateGraphData());
-        } else {
-          const generator = new MockDataGenerator(config);
-          setInitialData(generator.generateGraphData());
-        }
-      } catch (error) {
-        console.warn("載入資料失敗，改用內建假資料。", error);
-        const generator = new MockDataGenerator(config);
-        setInitialData(generator.generateGraphData());
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    void loadData();
+    dataSourceRef.current = dataSource;
   }, [dataSource]);
+
+  useEffect(() => {
+    const worker = new Worker(new URL("./workers/graphData.worker.ts", import.meta.url), { type: "module" });
+    workerRef.current = worker;
+
+    worker.onmessage = (event: MessageEvent<unknown>) => {
+      const payload = event.data;
+      if (typeof payload !== "object" || payload === null) return;
+      const record = payload as Record<string, unknown>;
+      if (typeof record.id !== "number") return;
+      if (record.id !== requestIdRef.current) return;
+
+      if (record.ok === true) {
+        const data = record.data;
+        if (typeof data === "object" && data !== null) {
+          setInitialData(data as IGraphData);
+          setLoadError(null);
+        }
+        setIsLoading(false);
+        return;
+      }
+
+      const error = typeof record.error === "string" ? record.error : "Unknown error";
+      setLoadError(error);
+      setIsLoading(false);
+    };
+
+    requestData(dataSourceRef.current);
+
+    return () => {
+      worker.terminate();
+      workerRef.current = null;
+    };
+  }, [requestData]);
+
+  useEffect(() => {
+    requestData(dataSource);
+  }, [dataSource, requestData]);
+
+  const handleDataSourceChange = useCallback(
+    (next: DataSourceType) => {
+      setIsLoading(true);
+      setLoadError(null);
+
+      if (next === "mock") {
+        const estimatedNodes = estimateMockNodeCount(config);
+        if (estimatedNodes >= BIG_GRAPH_NODE_THRESHOLD) {
+          setLoadError(`mock 估算節點數約 ${estimatedNodes}，過大可能造成卡頓，已自動改用 fakedata.json。`);
+          setDataSource("json");
+          return;
+        }
+      }
+
+      setDataSource(next);
+    },
+    [setDataSource],
+  );
 
   const { nodes, edges } = useDiagram(initialData.nodes, initialData.edges);
 
@@ -67,7 +126,8 @@ function App() {
 
   return (
     <div className="app-container">
-      <DataSourceToggle value={dataSource} onChange={setDataSource} disabled={isLoading} />
+      <DataSourceToggle value={dataSource} onChange={handleDataSourceChange} disabled={isLoading} />
+      {loadError && <div className="panel" style={{ margin: "12px auto", maxWidth: 900 }}>載入失敗：{loadError}</div>}
       <SigmaCanvas nodes={nodes} edges={edges} />
     </div>
   );
