@@ -41,19 +41,23 @@ const post = (message: WorkerResponse): void => {
   self.postMessage(message);
 };
 
+const isWorkerRequest = (value: unknown): value is WorkerRequest => {
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== "number") return false;
+  if (value.kind === "generate") return isRecord(value.config);
+  if (value.kind === "loadJson") return typeof value.url === "string";
+  return false;
+};
+
 self.onmessage = (event: MessageEvent<unknown>) => {
   const payload = event.data;
-  if (!isRecord(payload)) return;
-  if (typeof payload.id !== "number") return;
-  if (typeof payload.kind !== "string") return;
-
-  const id = payload.id as RequestId;
+  if (!isWorkerRequest(payload)) return;
+  const id = payload.id;
 
   void (async () => {
     try {
       if (payload.kind === "generate") {
-        const config = payload.config;
-        const generator = new MockDataGenerator(config as IMockGeneratorConfig);
+        const generator = new MockDataGenerator(payload.config);
         const data = generator.generateGraphData();
         post({ id, ok: true, data: { nodes: stripXY(data.nodes), edges: data.edges } });
         return;
@@ -61,7 +65,7 @@ self.onmessage = (event: MessageEvent<unknown>) => {
 
       if (payload.kind === "loadJson") {
         const url = payload.url;
-        if (typeof url !== "string" || url.length === 0) {
+        if (url.length === 0) {
           post({ id, ok: false, error: "Invalid url" });
           return;
         }
@@ -87,4 +91,3 @@ self.onmessage = (event: MessageEvent<unknown>) => {
     }
   })();
 };
-
