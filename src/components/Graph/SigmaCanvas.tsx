@@ -45,7 +45,150 @@ import type Sigma from "sigma";
 import { ContextMenu } from "./ContextMenu";
 import { NodeDetailPanel } from "./NodeDetailPanel";
 
-// ... existing imports
+type EdgeType = "structural" | "transactional" | null;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function readEdgeType(attributes: unknown): EdgeType {
+  if (!isRecord(attributes)) return null;
+  const edgeType = attributes.edgeType;
+  if (edgeType === "structural" || edgeType === "transactional") return edgeType;
+  return null;
+}
+
+function isPinned(value: unknown): boolean {
+  return value === true;
+}
+
+function relayoutVisibleStructuralNodes(input: {
+  graph: Graph;
+  expandMode: ExpandMode;
+  layoutMode: LayoutMode;
+}): void {
+  const { graph, expandMode, layoutMode } = input;
+
+  const visibleNodes: string[] = [];
+  graph.forEachNode((nodeId, attributes) => {
+    const hidden = isRecord(attributes) ? attributes.hidden : undefined;
+    if (hidden !== true) visibleNodes.push(nodeId);
+  });
+  const visibleSet = new Set(visibleNodes);
+
+  const advisorRoots: string[] = [];
+  visibleNodes.forEach((nodeId) => {
+    const payload = graph.getNodeAttribute(nodeId, "payload");
+    const maybeBusinessType =
+      isRecord(payload) && isRecord(payload.data) && isRecord(payload.data.metaData)
+        ? payload.data.metaData.businessType
+        : null;
+    if (maybeBusinessType === "理專") advisorRoots.push(nodeId);
+  });
+
+  const roots =
+    advisorRoots.length > 0
+      ? advisorRoots
+      : visibleNodes.filter((nodeId) => {
+          let hasVisibleStructuralParent = false;
+          graph.forEachInEdge(nodeId, (_edge, attributes, source) => {
+            if (hasVisibleStructuralParent) return;
+            if (readEdgeType(attributes) !== "structural") return;
+            if (visibleSet.has(source)) hasVisibleStructuralParent = true;
+          });
+          return !hasVisibleStructuralParent;
+        });
+
+  roots.sort();
+
+  const visited = new Set<string>();
+  const queue: string[] = [...roots];
+
+  while (queue.length > 0) {
+    const parentId = queue.shift();
+    if (!parentId) break;
+    if (visited.has(parentId)) continue;
+    visited.add(parentId);
+
+    const parentX = readNumber(graph.getNodeAttribute(parentId, "x")) ?? 0;
+    const parentY = readNumber(graph.getNodeAttribute(parentId, "y")) ?? 0;
+    const parentSize = readNumber(graph.getNodeAttribute(parentId, "size")) ?? 10;
+
+    const visibleStructuralChildren: string[] = [];
+    graph.forEachOutEdge(parentId, (_edge, attributes, _source, target) => {
+      if (readEdgeType(attributes) !== "structural") return;
+      if (!visibleSet.has(target)) return;
+      visibleStructuralChildren.push(target);
+    });
+
+    visibleStructuralChildren.forEach((childId) => {
+      if (!visited.has(childId)) queue.push(childId);
+    });
+
+    const movableChildren = visibleStructuralChildren.filter(
+      (childId) => !isPinned(graph.getNodeAttribute(childId, "pinned")),
+    );
+
+    if (movableChildren.length === 0) continue;
+
+    if (expandMode === "circle") {
+      const sortedChildren = [...movableChildren].sort();
+      const childSizes = sortedChildren.map((childId) => readNumber(graph.getNodeAttribute(childId, "size")) ?? 8);
+      const avgChildSize = childSizes.reduce((sum, n) => sum + n, 0) / Math.max(1, childSizes.length);
+      const baseRadius = Math.max(300, parentSize * 28);
+      const densityBoost = Math.sqrt(sortedChildren.length) * 130;
+      const rawRadius = baseRadius + densityBoost + avgChildSize * 6;
+      const radius = clamp(rawRadius, 180, 6000);
+
+      sortedChildren.forEach((childId, index) => {
+        const n = sortedChildren.length;
+        const angle = (index / Math.max(1, n)) * Math.PI * 2 - Math.PI / 2;
+        const childSize = readNumber(graph.getNodeAttribute(childId, "size")) ?? 8;
+        const r = radius + childSize * 8;
+        graph.setNodeAttribute(childId, "x", parentX + Math.cos(angle) * r);
+        graph.setNodeAttribute(childId, "y", parentY + Math.sin(angle) * r);
+      });
+      continue;
+    }
+
+    if (layoutMode === "layered") {
+      const candidates = [...movableChildren].sort((a, b) => {
+        const ay = readNumber(graph.getNodeAttribute(a, "y")) ?? 0;
+        const by = readNumber(graph.getNodeAttribute(b, "y")) ?? 0;
+        return ay - by;
+      });
+
+      const minDx = Math.max(520, parentSize * 24);
+      const yStep = 150;
+      const mid = (candidates.length - 1) / 2;
+
+      candidates.forEach((childId, index) => {
+        const childSize = readNumber(graph.getNodeAttribute(childId, "size")) ?? 8;
+        const desiredX = parentX + minDx + childSize * 8;
+        const yOffset = (index - mid) * (yStep + childSize * 4);
+        graph.setNodeAttribute(childId, "x", desiredX);
+        graph.setNodeAttribute(childId, "y", parentY + yOffset);
+      });
+      continue;
+    }
+
+    const maxPerRing = 12;
+    const ringGap = 140;
+    const baseRadius = Math.max(140, parentSize * 14);
+    const sortedChildren = [...movableChildren].sort();
+
+    sortedChildren.forEach((childId, index) => {
+      const ringIndex = Math.floor(index / maxPerRing);
+      const indexInRing = index % maxPerRing;
+      const countInRing = Math.min(maxPerRing, sortedChildren.length - ringIndex * maxPerRing);
+      const angle = (indexInRing / Math.max(1, countInRing)) * Math.PI * 2;
+      const childSize = readNumber(graph.getNodeAttribute(childId, "size")) ?? 8;
+      const ringRadius = baseRadius + ringIndex * ringGap + childSize * 6;
+      graph.setNodeAttribute(childId, "x", parentX + Math.cos(angle) * ringRadius);
+      graph.setNodeAttribute(childId, "y", parentY + Math.sin(angle) * ringRadius);
+    });
+  }
+}
 
 /**
  * Layout 調參筆記（只影響「展開」後新顯示的 structural 子節點 x/y，不改 hidden/展開/互動邏輯）
@@ -81,7 +224,6 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   const [layoutMode] = useState<LayoutMode>("layered");
   const [expandMode, setExpandMode] = useState<ExpandMode>("structure");
   const [isInitialLayoutReady, setIsInitialLayoutReady] = useState(false);
-  const [rendererKey, setRendererKey] = useState(0);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
@@ -97,13 +239,11 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   }, [graph]);
 
   useEffect(() => {
-    setRendererKey((prev) => prev + 1);
-    setIsInitialLayoutReady(false);
-  }, [expandMode]);
-
-  useEffect(() => {
-    sigmaRef.current = null;
-  }, [rendererKey]);
+    if (!isInitialLayoutReady) return;
+    if (!sigmaRef.current) return;
+    relayoutVisibleStructuralNodes({ graph, expandMode, layoutMode });
+    sigmaRef.current.refresh();
+  }, [expandMode, graph, isInitialLayoutReady, layoutMode]);
 
   const handleHover = useCallback((node: ISigmaNode | null, event?: MouseEvent) => {
     if (!node || !event) {
@@ -122,13 +262,20 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
 	    if (sigmaRef.current) sigmaRef.current.refresh();
 	  }, [layoutMode]);
 
-  const handleRightClickNode = useCallback((event: any) => {
+  type SigmaRightClickNodeEvent = { node: string; event: { x: number; y: number; original: Event } };
+  const isSigmaRightClickNodeEvent = (value: unknown): value is SigmaRightClickNodeEvent => {
+    if (!isRecord(value)) return false;
+    if (typeof value.node !== "string") return false;
+    if (!isRecord(value.event)) return false;
+    return typeof value.event.x === "number" && typeof value.event.y === "number" && "original" in value.event;
+  };
+
+  const handleRightClickNode = useCallback((event: unknown) => {
+    if (!isSigmaRightClickNodeEvent(event)) return;
+    if (typeof event.event.original.preventDefault === "function") {
       event.event.original.preventDefault();
-      setContextMenu({
-          x: event.event.x,
-          y: event.event.y,
-          nodeId: event.node
-      });
+    }
+    setContextMenu({ x: event.event.x, y: event.event.y, nodeId: event.node });
   }, []);
 
   const closeContextMenu = useCallback(() => {
@@ -264,13 +411,11 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     defaultDrawEdgeLabel: drawStraightEdgeLabel,
     // @ts-ignore: Sigma v3 supports labelRenderer but type might be missing in @react-sigma settings
     labelRenderer: drawLabel,
-    nodeReducer: (_node: string, data: any) => {
-      if (data.hidden) {
-        return { ...data, size: 0, label: "" };
-      }
+    nodeReducer: (_node: string, data: Record<string, unknown>) => {
+      if (data.hidden === true) return { ...data, size: 0, label: "" };
       return data;
     },
-    edgeReducer: (edge: string, data: any) => {
+    edgeReducer: (edge: string, data: Record<string, unknown>) => {
        // Use captured 'graph' instance from closure
        // Safety check
        if (!graph.hasEdge(edge)) return data;
@@ -300,7 +445,6 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   return (
     <div className="graph-container" onClick={closeContextMenu}>
       <SigmaContainer
-        key={rendererKey}
         style={{
           width: "100%",
           height: "100%",
@@ -399,7 +543,7 @@ interface GraphEventsProps {
   graph: Graph;
   onHoverChange: (node: ISigmaNode | null, event?: MouseEvent) => void;
   onEdgeHoverChange?: (edgeId: string | null) => void;
-  onRightClickNode?: (event: any) => void;
+  onRightClickNode?: (event: unknown) => void;
   setSigma?: (sigma: Sigma) => void;
 }
 
@@ -409,6 +553,7 @@ const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode
   const sigma = useSigma();
   const [draggedNode, setDraggedNode] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const didMoveRef = useRef(false);
 
   useEffect(() => {
       if (setSigma) setSigma(sigma);
@@ -432,8 +577,9 @@ const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode
         defaultDrawNodeHover: drawLabel
     };
     
+    const sigmaWithSettings = sigma as unknown as { setSetting: (key: string, value: unknown) => void };
     Object.entries(rendererSettings).forEach(([key, value]) => {
-        sigma.setSetting(key as any, value);
+        sigmaWithSettings.setSetting(key, value);
     });
     
   }, [sigma]);
@@ -447,12 +593,16 @@ const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode
       const pos = sigma.viewportToGraph({ x: event.clientX, y: event.clientY });
       sigma.getGraph().setNodeAttribute(draggedNode, "x", pos.x);
       sigma.getGraph().setNodeAttribute(draggedNode, "y", pos.y);
+      didMoveRef.current = true;
       event.preventDefault();
       event.stopPropagation();
     };
 
     const stopDragging = () => {
       if (!isDragging) return;
+      if (draggedNode && didMoveRef.current) {
+        sigma.getGraph().setNodeAttribute(draggedNode, "pinned", true);
+      }
       setIsDragging(false);
       setDraggedNode(null);
       sigma.getCamera().enable();
@@ -481,6 +631,9 @@ const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode
       if (draggedNode) {
         sigma.getGraph().removeNodeAttribute(draggedNode, "highlighted");
       }
+      if (draggedNode && didMoveRef.current) {
+        sigma.getGraph().setNodeAttribute(draggedNode, "pinned", true);
+      }
       setIsDragging(false);
       setDraggedNode(null);
       sigma.getCamera().enable();
@@ -491,6 +644,7 @@ const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode
         // Only drag on left click (or if checks are generic, fine. usually downNode is left)
         setDraggedNode(e.node);
         setIsDragging(true);
+        didMoveRef.current = false;
         sigma.getGraph().setNodeAttribute(e.node, "highlighted", true);
         sigma.getCamera().disable();
       },
