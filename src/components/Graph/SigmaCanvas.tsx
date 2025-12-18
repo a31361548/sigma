@@ -38,6 +38,8 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 
 // Edge label 顯示規則：hover 一定顯示；沒 hover 時則在鏡頭夠近才顯示（ratio 越小代表越 zoom-in）
 const EDGE_LABEL_SHOW_MAX_CAMERA_RATIO = 1.8;
+const HOVER_FOCUS_APPLY_DELAY_MS = 60;
+const HOVER_FOCUS_CLEAR_DELAY_MS = 120;
 
 type LayoutMode = "layered" | "radial";
 type ExpandMode = "structure" | "circle";
@@ -228,6 +230,11 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   const graph = useMemo(() => buildGraph(nodes, edges, isBigData), [edges, isBigData, nodes]);
   const [hoveredNode, setHoveredNode] = useState<{ node: ISigmaNode; x: number; y: number } | null>(null);
   const hoveredEdgeIdRef = useRef<string | null>(null);
+  const hoverFocusRef = useRef<{ nodeId: string; relatedNodes: Set<string> } | null>(null);
+  const hoverFocusTimersRef = useRef<{ applyTimer: number | null; clearTimer: number | null }>({
+    applyTimer: null,
+    clearTimer: null,
+  });
   const [layoutMode] = useState<LayoutMode>("layered");
   const [expandMode, setExpandMode] = useState<ExpandMode>("structure");
   const [isInitialLayoutReady, setIsInitialLayoutReady] = useState(false);
@@ -252,13 +259,68 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     sigmaRef.current.refresh();
   }, [expandMode, graph, isInitialLayoutReady, layoutMode]);
 
+  const computeRelatedNodes = useCallback(
+    (startNodeId: string, maxHops: number): Set<string> => {
+      const related = new Set<string>([startNodeId]);
+      let frontier: string[] = [startNodeId];
+
+      for (let depth = 0; depth < maxHops; depth += 1) {
+        const nextFrontier: string[] = [];
+        frontier.forEach((nodeId) => {
+          graph.forEachNeighbor(nodeId, (neighborId) => {
+            if (related.has(neighborId)) return;
+            related.add(neighborId);
+            nextFrontier.push(neighborId);
+          });
+        });
+        frontier = nextFrontier;
+        if (frontier.length === 0) break;
+      }
+
+      return related;
+    },
+    [graph],
+  );
+
   const handleHover = useCallback((node: ISigmaNode | null, event?: MouseEvent) => {
+    const timers = hoverFocusTimersRef.current;
+    if (timers.clearTimer !== null) {
+      window.clearTimeout(timers.clearTimer);
+      timers.clearTimer = null;
+    }
+
     if (!node || !event) {
       setHoveredNode(null);
-    } else {
-      setHoveredNode({ node, x: event.clientX, y: event.clientY });
+
+      if (timers.applyTimer !== null) {
+        window.clearTimeout(timers.applyTimer);
+        timers.applyTimer = null;
+      }
+
+      timers.clearTimer = window.setTimeout(() => {
+        hoverFocusRef.current = null;
+        if (sigmaRef.current) sigmaRef.current.refresh();
+      }, HOVER_FOCUS_CLEAR_DELAY_MS);
+
+      return;
     }
-  }, []);
+
+    setHoveredNode({ node, x: event.clientX, y: event.clientY });
+
+    const currentFocus = hoverFocusRef.current;
+    if (currentFocus?.nodeId === node.id) return;
+
+    if (timers.applyTimer !== null) {
+      window.clearTimeout(timers.applyTimer);
+      timers.applyTimer = null;
+    }
+
+    const targetNodeId = node.id;
+    timers.applyTimer = window.setTimeout(() => {
+      hoverFocusRef.current = { nodeId: targetNodeId, relatedNodes: computeRelatedNodes(targetNodeId, 2) };
+      if (sigmaRef.current) sigmaRef.current.refresh();
+    }, HOVER_FOCUS_APPLY_DELAY_MS);
+  }, [computeRelatedNodes]);
 
   const handleEdgeHoverChange = useCallback((edgeId: string | null) => {
     hoveredEdgeIdRef.current = edgeId;
@@ -420,8 +482,14 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     labelRenderer: drawLabel,
     edgeProgramClasses: { curved: EdgeCurveProgram },
     defaultEdgeType: "arrow",
-    nodeReducer: (_node: string, data: Record<string, unknown>) => {
+    nodeReducer: (nodeId: string, data: Record<string, unknown>) => {
       if (data.hidden === true) return { ...data, size: 0, label: "" };
+
+      const focus = hoverFocusRef.current;
+      if (focus && !focus.relatedNodes.has(nodeId)) {
+        return { ...data, label: "", color: "#cbd5e1" };
+      }
+
       return data;
     },
     edgeReducer: (edge: string, data: Record<string, unknown>) => {
@@ -439,6 +507,13 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
        
        if (sourceHidden || targetHidden) {
            return { ...data, hidden: true, size: 0 };
+       }
+
+       const focus = hoverFocusRef.current;
+       const isRelatedEdge = focus ? focus.relatedNodes.has(source) && focus.relatedNodes.has(target) : true;
+       if (!isRelatedEdge) {
+         const nextSize = typeof data.size === "number" && Number.isFinite(data.size) ? Math.max(0.4, data.size * 0.5) : data.size;
+         return { ...data, color: "#cbd5e1", size: nextSize, label: "" };
        }
 
        const cameraRatio = sigmaRef.current?.getCamera().getState().ratio;
