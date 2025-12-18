@@ -325,8 +325,10 @@ async function runElkForGroup(input: {
   });
 
   const elkEdges: ElkExtendedEdge[] = [];
-  input.graph.forEachEdge((edgeId, _attributes, source, target) => {
+  input.graph.forEachEdge((edgeId, attributes, source, target) => {
     if (!nodeIdSet.has(source) || !nodeIdSet.has(target)) return;
+    const edgeType = readEdgeType(attributes);
+    if (edgeType !== "structural") return;
     elkEdges.push({ id: edgeId, sources: [source], targets: [target] });
   });
 

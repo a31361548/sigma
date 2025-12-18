@@ -14,6 +14,7 @@ import { ElkLayout } from "./ElkLayout";
 import { GraphSearch } from "../Operations/GraphSearch";
 import drawLabel from "../../utils/sigma/drawLabel";
 import { drawStraightEdgeLabel } from "sigma/rendering";
+import EdgeCurveProgram from "@sigma/edge-curve";
 
 
 interface SigmaCanvasProps {
@@ -46,6 +47,12 @@ import { ContextMenu } from "./ContextMenu";
 import { NodeDetailPanel } from "./NodeDetailPanel";
 
 type EdgeType = "structural" | "transactional" | null;
+
+class MultiDirectedGraph extends Graph {
+  constructor() {
+    super({ type: "directed", multi: true });
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -411,6 +418,8 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     defaultDrawEdgeLabel: drawStraightEdgeLabel,
     // @ts-ignore: Sigma v3 supports labelRenderer but type might be missing in @react-sigma settings
     labelRenderer: drawLabel,
+    edgeProgramClasses: { curved: EdgeCurveProgram },
+    defaultEdgeType: "arrow",
     nodeReducer: (_node: string, data: Record<string, unknown>) => {
       if (data.hidden === true) return { ...data, size: 0, label: "" };
       return data;
@@ -435,7 +444,9 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
        const cameraRatio = sigmaRef.current?.getCamera().getState().ratio;
        const isZoomClose =
          typeof cameraRatio === "number" && cameraRatio <= EDGE_LABEL_SHOW_MAX_CAMERA_RATIO;
-       const shouldShowLabel = isZoomClose || hoveredEdgeIdRef.current === edge;
+       const labelText = typeof data.label === "string" ? data.label : "";
+       const isParallelDemoEdge = labelText.startsWith("平行交易");
+       const shouldShowLabel = isParallelDemoEdge || isZoomClose || hoveredEdgeIdRef.current === edge;
        if (!shouldShowLabel) return { ...data, label: "" };
 
        return data;
@@ -445,6 +456,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   return (
     <div className="graph-container" onClick={closeContextMenu}>
       <SigmaContainer
+        graph={MultiDirectedGraph}
         style={{
           width: "100%",
           height: "100%",
@@ -711,24 +723,50 @@ const buildGraph = (nodes: ISigmaNode[], edges: ISigmaEdge[], isBigData: boolean
     });
   });
 
-	  edges.forEach((edge) => {
-	    const isTrans = edge.data?.type === "transactional";
-	    const color = isTrans ? edgeColorMap.transactional : edgeColorMap.structural;
-	    if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) return;
-	    if (graph.hasEdge(edge.id) || graph.hasDirectedEdge(edge.source, edge.target)) return;
-	    const fallbackLabel = isTrans ? "交易" : "結構";
-	    try {
-	      graph.addEdgeWithKey(edge.id, edge.source, edge.target, {
-	        color,
-	        size: isTrans ? 3 : 1,
-	        label: edge.label ?? fallbackLabel,
-	        type: "arrow",
-	        weight: isTrans ? 10 : 0.05,
-	        zIndex: isTrans ? 10 : 0,
-	        edgeType: edge.data?.type || "structural",
-	      });
-    } catch (error) {
-      // Edge already exists; ignore
+  const edgeIdsByPair = new Map<string, string[]>();
+  edges.forEach((edge) => {
+    if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) return;
+    const key = `${edge.source}→${edge.target}`;
+    const list = edgeIdsByPair.get(key);
+    if (list) list.push(edge.id);
+    else edgeIdsByPair.set(key, [edge.id]);
+  });
+
+  const curvatureByEdgeId = new Map<string, number>();
+  edgeIdsByPair.forEach((edgeIds) => {
+    if (edgeIds.length <= 1) return;
+    const mid = (edgeIds.length - 1) / 2;
+    const step = 0.25;
+    edgeIds.forEach((edgeId, index) => {
+      const offset = index - mid;
+      const curvature = Math.max(-0.9, Math.min(0.9, offset * step));
+      curvatureByEdgeId.set(edgeId, curvature);
+    });
+  });
+
+  edges.forEach((edge) => {
+    const isTrans = edge.data?.type === "transactional";
+    const color = isTrans ? edgeColorMap.transactional : edgeColorMap.structural;
+    if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) return;
+    if (graph.hasEdge(edge.id)) return;
+
+    const isParallel = curvatureByEdgeId.has(edge.id);
+    const fallbackLabel = isTrans ? "交易" : "結構";
+    const edgeType = isParallel ? "curved" : "arrow";
+
+    try {
+      graph.addEdgeWithKey(edge.id, edge.source, edge.target, {
+        color,
+        size: isTrans ? 3 : 1,
+        label: edge.label ?? fallbackLabel,
+        type: edgeType,
+        curvature: isParallel ? curvatureByEdgeId.get(edge.id) : undefined,
+        weight: isTrans ? 10 : 0.05,
+        zIndex: isTrans ? 10 : 0,
+        edgeType: edge.data?.type || "structural",
+      });
+    } catch {
+      // ignore
     }
   });
 

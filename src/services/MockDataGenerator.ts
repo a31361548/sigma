@@ -183,6 +183,9 @@ export class MockDataGenerator {
         }
     }
 
+    // C. Guaranteed parallel edges: ensure 1~2 groups of (A -> B) with 3 edges each
+    this.injectGuaranteedParallelTransactions(edges);
+
     return { nodes, edges };
   }
 
@@ -316,6 +319,57 @@ export class MockDataGenerator {
               }
           } as ITransactionalEdgePayload
       };
+  }
+
+  private injectGuaranteedParallelTransactions(edges: ISigmaEdge[]): void {
+    const getPair = (pairIndex: number): { sourceId: string; targetId: string } | null => {
+      if (this.advisors.length >= 2) {
+        const sourceIdx = (pairIndex * 2) % this.advisors.length;
+        const targetIdx = (sourceIdx + 1) % this.advisors.length;
+        const sourceId = this.advisors[sourceIdx]?.id;
+        const targetId = this.advisors[targetIdx]?.id;
+        if (sourceId && targetId && sourceId !== targetId) return { sourceId, targetId };
+      }
+
+      if (this.allAccounts.length >= 2) {
+        const source = this.allAccounts[Math.floor(Math.random() * this.allAccounts.length)];
+        const candidates = this.allAccounts.filter((acc) => acc.id !== source.id);
+        if (candidates.length === 0) return null;
+        const target = candidates[Math.floor(Math.random() * candidates.length)];
+        return { sourceId: source.id, targetId: target.id };
+      }
+
+      return null;
+    };
+
+    const makeGroup = (suffix: string, pairIndex: number): boolean => {
+      const pair = getPair(pairIndex);
+      if (!pair) return false;
+
+      const created: ISigmaEdge[] = Array.from({ length: 3 }, (_v, index) => ({
+        ...this.transactionalEdge(pair.sourceId, pair.targetId),
+        label: `平行交易${suffix}-${index + 1}`,
+        data: {
+          type: "transactional",
+          metaData: {
+            amount: Number(faker.finance.amount()),
+            date: faker.date.recent({ days: 30 }).toISOString().split("T")[0],
+            description: `平行交易${suffix}-${index + 1}`,
+          },
+        } as ITransactionalEdgePayload,
+      }));
+
+      edges.push(...created);
+      return true;
+    };
+
+    // Always at least 1 group
+    makeGroup("A", 0);
+
+    // Optionally add a 2nd group (only if enough accounts)
+    if ((this.advisors.length >= 4 || this.allAccounts.length >= 4) && randomInt({ min: 0, max: 1 }) === 1) {
+      makeGroup("B", 1);
+    }
   }
 }
 
