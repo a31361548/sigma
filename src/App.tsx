@@ -7,9 +7,9 @@ import type { IMockGeneratorConfig } from "./interfaces/mock/IMockGenerator";
 import type { IGraphData } from "./interfaces/mock/IMockData";
 
 const config: IMockGeneratorConfig = {
-  advisorCount: 2,
-  clientsPerAdvisor: { min: 3, max: 8 },
-  accountsPerClient: { min: 2, max: 5 },
+  advisorCount: 500,
+  clientsPerAdvisor: { min:1,max: 3 },
+  accountsPerClient: { min: 2,max: 4},
   transactionsPerAccount: 0,
   fixedTransactionsPerAccount: 0,
 };

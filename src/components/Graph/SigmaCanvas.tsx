@@ -15,6 +15,7 @@ import { GraphSearch } from "../Operations/GraphSearch";
 import drawLabel from "../../utils/sigma/drawLabel";
 import { drawStraightEdgeLabel } from "sigma/rendering";
 import EdgeCurveProgram from "@sigma/edge-curve";
+import { createNodeImageProgram } from "@sigma/node-image";
 
 
 interface SigmaCanvasProps {
@@ -27,6 +28,12 @@ const colorMap = {
   client: "#10b981",
   portfolio: "#f59e0b",
   account: "#8b5cf6",
+};
+
+const iconMapByBusinessType: Record<string, string> = {
+  理專: "/image/gangs.png",
+  客戶: "/image/person.png",
+  帳號: "/image/accounts.png",
 };
 
 const edgeColorMap = {
@@ -480,6 +487,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     defaultDrawEdgeLabel: drawStraightEdgeLabel,
     // @ts-ignore: Sigma v3 supports labelRenderer but type might be missing in @react-sigma settings
     labelRenderer: drawLabel,
+    nodeProgramClasses: { image: createNodeImageProgram() },
     edgeProgramClasses: { curved: EdgeCurveProgram },
     defaultEdgeType: "arrow",
     nodeReducer: (nodeId: string, data: Record<string, unknown>) => {
@@ -487,7 +495,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
 
       const focus = hoverFocusRef.current;
       if (focus && !focus.relatedNodes.has(nodeId)) {
-        return { ...data, label: "", color: "#cbd5e1" };
+        return { ...data, type: undefined, image: undefined, label: "", color: "#cbd5e1" };
       }
 
       return data;
@@ -787,12 +795,16 @@ const buildGraph = (nodes: ISigmaNode[], edges: ISigmaEdge[], isBigData: boolean
       size = isBigData ? 5 : 10;
     }
 
+    const icon = type ? iconMapByBusinessType[type] : undefined;
+
     graph.mergeNode(node.id, {
       label: node.label,
       x: Math.cos(angle) * radius,
       y: Math.sin(angle) * radius,
       size,
       color,
+      type: icon ? "image" : undefined,
+      image: icon,
       payload: node,
       hidden: !isAdvisor, // Initially hide if not advisor
     });

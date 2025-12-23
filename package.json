@@ -13,6 +13,8 @@
     "@react-sigma/core": "^5.0.6",
     "@react-sigma/layout-forceatlas2": "^5.0.6",
     "@sigma/edge-curve": "^3.0.0",
+    "@sigma/export-image": "^3.0.0",
+    "@sigma/node-image": "^3.0.0",
     "@types/uuid": "^10.0.0",
     "elkjs": "^0.11.0",
     "graphology": "^0.26.0",
