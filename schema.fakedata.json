@@ -1,0 +1,85 @@
+{
+  "nodes": [
+    {
+      "id": "n_advisor",
+      "label": "江旭堯",
+      "data": {
+        "label": "江旭堯",
+        "metaData": {
+          "personName": "江旭堯",
+          "businessType": "理專",
+          "jobTitle": "投資顧問",
+          "department": "數位金融部",
+          "responsibleArea": "信義區",
+          "taiwanId": "R518945840"
+        },
+        "outgoingEdges": ["e_struct_1"]
+      }
+    },
+    {
+      "id": "n_client",
+      "label": "王大明",
+      "data": {
+        "label": "王大明",
+        "metaData": {
+          "businessType": "客戶",
+          "personName": "王大明",
+          "advisorId": "n_advisor",
+          "occupation": "產品經理",
+          "companyName": "聯發科",
+          "taiwanId": "U842250826",
+          "email": "wang@example.com"
+        },
+        "outgoingEdges": ["e_struct_2"]
+      }
+    },
+    {
+      "id": "n_account",
+      "label": "595274727973",
+      "data": {
+        "label": "595274727973",
+        "metaData": {
+          "businessType": "帳號",
+          "accountNumber": "595274727973",
+          "ownerId": "n_client",
+          "bankName": "永豐銀行"
+        },
+        "outgoingEdges": ["e_trans_1"]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_struct_1",
+      "source": "n_advisor",
+      "target": "n_client",
+      "label": "結構",
+      "data": {
+        "type": "structural"
+      }
+    },
+    {
+      "id": "e_struct_2",
+      "source": "n_client",
+      "target": "n_account",
+      "label": "結構",
+      "data": {
+        "type": "structural"
+      }
+    },
+    {
+      "id": "e_trans_1",
+      "source": "n_account",
+      "target": "n_advisor",
+      "label": "$32673",
+      "data": {
+        "type": "transactional",
+        "metaData": {
+          "amount": 32673,
+          "date": "2025/11/22 上午6:37:57",
+          "description": "交易紀錄"
+        }
+      }
+    }
+  ]
+}

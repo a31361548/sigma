@@ -16,6 +16,7 @@ import drawLabel from "../../utils/sigma/drawLabel";
 import { drawStraightEdgeLabel } from "sigma/rendering";
 import EdgeCurveProgram from "@sigma/edge-curve";
 import { createNodeImageProgram } from "@sigma/node-image";
+import { downloadAsPNG } from "@sigma/export-image";
 
 
 interface SigmaCanvasProps {
@@ -334,6 +335,11 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     if (sigmaRef.current) sigmaRef.current.refresh();
   }, []);
 
+  const handleExportImage = useCallback(() => {
+    if (!sigmaRef.current) return;
+    downloadAsPNG(sigmaRef.current, { fileName: "graph", backgroundColor: "#ffffff" });
+  }, []);
+
 	  useEffect(() => {
 	    if (sigmaRef.current) sigmaRef.current.refresh();
 	  }, [layoutMode]);
@@ -610,6 +616,20 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
             }}
           >
             Circle
+          </button>
+          <button
+            type="button"
+            onClick={handleExportImage}
+            style={{
+              padding: "6px 12px",
+              background: "rgba(255,255,255,0.85)",
+              color: "#111827",
+              border: "1px solid rgba(0,0,0,0.18)",
+              borderRadius: 8,
+              cursor: "pointer",
+            }}
+          >
+            匯出圖片
           </button>
         </div>
 
