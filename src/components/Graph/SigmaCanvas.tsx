@@ -17,6 +17,7 @@ import { drawStraightEdgeLabel } from "sigma/rendering";
 import EdgeCurveProgram from "@sigma/edge-curve";
 import { createNodeImageProgram } from "@sigma/node-image";
 import { downloadAsPNG } from "@sigma/export-image";
+import { NodeBorderProgram } from "@sigma/node-border";
 
 
 interface SigmaCanvasProps {
@@ -41,6 +42,10 @@ const edgeColorMap = {
   structural: "#e2e8f0",
   transactional: "#64748b",
 };
+
+const MARKED_COLOR = "#22c55e";
+const MARKED_BORDER_COLOR = "#15803d";
+const MARKED_BORDER_SIZE = 4;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -248,6 +253,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   const [isInitialLayoutReady, setIsInitialLayoutReady] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
+  const [markedNodeIds, setMarkedNodeIds] = useState<Set<string>>(new Set());
   const sigmaRef = useRef<Sigma | null>(null);
 
   // Fix: Stabilize this callback to prevent ElkLayout from re-running on every render (e.g. hover)
@@ -366,6 +372,16 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
 
   const closeDetailPanel = useCallback(() => {
     setDetailNodeId(null);
+  }, []);
+
+  const toggleMarkedNode = useCallback((nodeId: string) => {
+    setMarkedNodeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+    if (sigmaRef.current) sigmaRef.current.refresh();
   }, []);
 
   const handleHideNode = useCallback((nodeId: string) => {
@@ -493,18 +509,41 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     defaultDrawEdgeLabel: drawStraightEdgeLabel,
     // @ts-ignore: Sigma v3 supports labelRenderer but type might be missing in @react-sigma settings
     labelRenderer: drawLabel,
-    nodeProgramClasses: { image: createNodeImageProgram() },
+    nodeProgramClasses: { circle: NodeBorderProgram, image: createNodeImageProgram() },
     edgeProgramClasses: { curved: EdgeCurveProgram },
     defaultEdgeType: "arrow",
     nodeReducer: (nodeId: string, data: Record<string, unknown>) => {
       if (data.hidden === true) return { ...data, size: 0, label: "" };
 
       const focus = hoverFocusRef.current;
-      if (focus && !focus.relatedNodes.has(nodeId)) {
-        return { ...data, type: undefined, image: undefined, label: "", color: "#cbd5e1" };
+      const isMarked = markedNodeIds.has(nodeId);
+      if (focus && !focus.relatedNodes.has(nodeId) && !isMarked) {
+        const mutedColor = "#cbd5e1";
+        return {
+          ...data,
+          type: "circle",
+          image: undefined,
+          label: "",
+          color: mutedColor,
+          borderColor: mutedColor,
+          borderSize: 0,
+        };
       }
 
-      return data;
+      if (isMarked) {
+        return {
+          ...data,
+          type: "circle",
+          image: undefined,
+          color: MARKED_COLOR,
+          borderColor: MARKED_BORDER_COLOR,
+          borderSize: MARKED_BORDER_SIZE,
+          zIndex: 20,
+        };
+      }
+
+      const baseColor = typeof data.color === "string" ? data.color : "#94a3b8";
+      return { ...data, borderColor: baseColor, borderSize: 0 };
     },
     edgeReducer: (edge: string, data: Record<string, unknown>) => {
        // Use captured 'graph' instance from closure
@@ -540,7 +579,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
 
        return data;
     }
-  }), [graph]);
+  }), [graph, markedNodeIds]);
 
   return (
     <div className="graph-container" onClick={closeContextMenu}>
@@ -572,10 +611,12 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
                 x={contextMenu.x}
                 y={contextMenu.y}
                 nodeId={contextMenu.nodeId}
+                isMarked={markedNodeIds.has(contextMenu.nodeId)}
                 onClose={closeContextMenu}
                 onHide={handleHideNode}
                 onExpand={handleExpandNode}
                 onShowDetails={(id) => setDetailNodeId(id)}
+                onToggleMark={toggleMarkedNode}
             />
         )}
 {/* ... existing layouts */}

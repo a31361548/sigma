@@ -4,13 +4,25 @@ interface ContextMenuProps {
   x: number;
   y: number;
   nodeId: string;
+  isMarked: boolean;
   onClose: () => void;
   onHide: (nodeId: string) => void;
   onExpand: (nodeId: string) => void;
   onShowDetails: (nodeId: string) => void;
+  onToggleMark: (nodeId: string) => void;
 }
 
-export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, nodeId, onClose, onHide, onExpand, onShowDetails }) => {
+export const ContextMenu: React.FC<ContextMenuProps> = ({
+  x,
+  y,
+  nodeId,
+  isMarked,
+  onClose,
+  onHide,
+  onExpand,
+  onShowDetails,
+  onToggleMark,
+}) => {
   return (
     <div
       style={{
@@ -58,6 +70,22 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, nodeId, onClose,
         }}
       >
         資料詳情
+      </div>
+      <div
+        style={{
+          padding: "8px 12px",
+          cursor: "pointer",
+          fontSize: "14px",
+          color: "#333",
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f0f0f0")}
+        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "white")}
+        onClick={() => {
+          onToggleMark(nodeId);
+          onClose();
+        }}
+      >
+        {isMarked ? "取消標記" : "標記"}
       </div>
       <div
         style={{
