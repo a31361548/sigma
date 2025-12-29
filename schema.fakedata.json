@@ -32,7 +32,7 @@
         },
         "outgoingEdges": ["e_struct_2"]
       }
-    },
+    }, 
     {
       "id": "n_account",
       "label": "595274727973",
