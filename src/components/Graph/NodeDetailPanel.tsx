@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement } from "react";
+import type { ReactElement } from "react";
 import type { NodePayload } from "../../interfaces/mock/IMockData";
 
 type Field = { label: string; value: string };
@@ -6,6 +6,8 @@ type Field = { label: string; value: string };
 interface NodeDetailPanelProps {
   title: string;
   payload: NodePayload | null;
+  note: string;
+  onNoteChange: (value: string) => void;
   onClose: () => void;
 }
 
@@ -68,13 +70,14 @@ const buildFields = (payload: NodePayload | null): Field[] => {
   }
 };
 
-export const NodeDetailPanel = ({ title, payload, onClose }: NodeDetailPanelProps): ReactElement => {
+export const NodeDetailPanel = ({
+  title,
+  payload,
+  note,
+  onNoteChange,
+  onClose,
+}: NodeDetailPanelProps): ReactElement => {
   const fields = buildFields(payload);
-  const [note, setNote] = useState<string>("");
-
-  useEffect(() => {
-    setNote("");
-  }, [payload]);
 
   return (
     <div
@@ -140,7 +143,7 @@ export const NodeDetailPanel = ({ title, payload, onClose }: NodeDetailPanelProp
         <div style={{ fontSize: 13, fontWeight: 600 }}>備註</div>
         <textarea
           value={note}
-          onChange={(event) => setNote(event.target.value)}
+          onChange={(event) => onNoteChange(event.target.value)}
           placeholder="輸入備註..."
           rows={4}
           style={{

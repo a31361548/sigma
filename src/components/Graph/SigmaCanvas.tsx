@@ -254,6 +254,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
   const [markedNodeIds, setMarkedNodeIds] = useState<Set<string>>(new Set());
+  const [notesByNodeId, setNotesByNodeId] = useState<Map<string, string>>(new Map());
   const sigmaRef = useRef<Sigma | null>(null);
 
   // Fix: Stabilize this callback to prevent ElkLayout from re-running on every render (e.g. hover)
@@ -372,6 +373,14 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
 
   const closeDetailPanel = useCallback(() => {
     setDetailNodeId(null);
+  }, []);
+
+  const handleNoteChange = useCallback((nodeId: string, value: string) => {
+    setNotesByNodeId((prev) => {
+      const next = new Map(prev);
+      next.set(nodeId, value);
+      return next;
+    });
   }, []);
 
   const toggleMarkedNode = useCallback((nodeId: string) => {
@@ -683,6 +692,8 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
         <NodeDetailPanel
           title="資料詳情"
           payload={(graph.getNodeAttribute(detailNodeId, "payload") as ISigmaNode | undefined)?.data ?? null}
+          note={notesByNodeId.get(detailNodeId) ?? ""}
+          onNoteChange={(value) => handleNoteChange(detailNodeId, value)}
           onClose={closeDetailPanel}
         />
       )}
