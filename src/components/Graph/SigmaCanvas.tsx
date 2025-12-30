@@ -56,6 +56,24 @@ const HOVER_FOCUS_CLEAR_DELAY_MS = 120;
 
 type LayoutMode = "layered" | "radial";
 type ExpandMode = "structure" | "circle";
+type ExportedGraph = {
+  attributes: Record<string, unknown>;
+  nodes: Array<{ key: string; attributes: Record<string, unknown> }>;
+  edges: Array<{ key: string; source: string; target: string; attributes: Record<string, unknown> }>;
+};
+
+type GraphExport = {
+  exportVersion: 1;
+  exportedAt: string;
+  graph: ExportedGraph;
+  uiState: {
+    markedNodeIds: string[];
+    notesByNodeId: Record<string, string>;
+    expandMode: ExpandMode;
+    layoutMode: LayoutMode;
+    camera: { x: number; y: number; ratio: number; angle: number } | null;
+  };
+};
 
 import type Sigma from "sigma";
 import { ContextMenu } from "./ContextMenu";
@@ -82,6 +100,58 @@ function readEdgeType(attributes: unknown): EdgeType {
 
 function isPinned(value: unknown): boolean {
   return value === true;
+}
+
+function exportGraph(graph: Graph): ExportedGraph {
+  const attributesRaw = graph.getAttributes();
+  const attributes = isRecord(attributesRaw) ? attributesRaw : {};
+  const nodes: ExportedGraph["nodes"] = [];
+  const edges: ExportedGraph["edges"] = [];
+
+  graph.forEachNode((nodeId, nodeAttributes) => {
+    nodes.push({ key: nodeId, attributes: isRecord(nodeAttributes) ? nodeAttributes : {} });
+  });
+
+  graph.forEachEdge((edgeId, edgeAttributes, source, target) => {
+    edges.push({
+      key: edgeId,
+      source,
+      target,
+      attributes: isRecord(edgeAttributes) ? edgeAttributes : {},
+    });
+  });
+
+  return { attributes, nodes, edges };
+}
+
+function buildNotesRecord(notesByNodeId: Map<string, string>): Record<string, string> {
+  const output: Record<string, string> = {};
+  notesByNodeId.forEach((value, key) => {
+    output[key] = value;
+  });
+  return output;
+}
+
+function buildExportFileName(prefix: string): string {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const yyyy = now.getFullYear();
+  const mm = pad(now.getMonth() + 1);
+  const dd = pad(now.getDate());
+  const hh = pad(now.getHours());
+  const min = pad(now.getMinutes());
+  return `${prefix}-${yyyy}${mm}${dd}-${hh}${min}.json`;
+}
+
+function downloadJson(data: GraphExport, fileName: string): void {
+  const payload = JSON.stringify(data, null, 2);
+  const blob = new Blob([payload], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function relayoutVisibleStructuralNodes(input: {
@@ -346,6 +416,25 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     if (!sigmaRef.current) return;
     downloadAsPNG(sigmaRef.current, { fileName: "graph", backgroundColor: "#ffffff" });
   }, []);
+
+  const handleExportJson = useCallback(() => {
+    const cameraState = sigmaRef.current?.getCamera().getState();
+    const exportData: GraphExport = {
+      exportVersion: 1,
+      exportedAt: new Date().toISOString(),
+      graph: exportGraph(graph),
+      uiState: {
+        markedNodeIds: Array.from(markedNodeIds),
+        notesByNodeId: buildNotesRecord(notesByNodeId),
+        expandMode,
+        layoutMode,
+        camera: cameraState
+          ? { x: cameraState.x, y: cameraState.y, ratio: cameraState.ratio, angle: cameraState.angle }
+          : null,
+      },
+    };
+    downloadJson(exportData, buildExportFileName("graph"));
+  }, [expandMode, graph, layoutMode, markedNodeIds, notesByNodeId]);
 
 	  useEffect(() => {
 	    if (sigmaRef.current) sigmaRef.current.refresh();
@@ -680,6 +769,20 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
             }}
           >
             匯出圖片
+          </button>
+          <button
+            type="button"
+            onClick={handleExportJson}
+            style={{
+              padding: "6px 12px",
+              background: "rgba(255,255,255,0.85)",
+              color: "#111827",
+              border: "1px solid rgba(0,0,0,0.18)",
+              borderRadius: 8,
+              cursor: "pointer",
+            }}
+          >
+            匯出JSON
           </button>
         </div>
 
