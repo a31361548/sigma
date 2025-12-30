@@ -8,7 +8,7 @@ import {
   ZoomControl,
 } from "@react-sigma/core";
 import Graph from "graphology";
-import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef, type ChangeEvent } from "react";
 import type { ISigmaEdge, ISigmaNode, NodePayload } from "../../interfaces/mock/IMockData";
 import { ElkLayout } from "./ElkLayout";
 import { GraphSearch } from "../Operations/GraphSearch";
@@ -102,6 +102,83 @@ function isPinned(value: unknown): boolean {
   return value === true;
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isExpandMode(value: unknown): value is ExpandMode {
+  return value === "structure" || value === "circle";
+}
+
+function isLayoutMode(value: unknown): value is LayoutMode {
+  return value === "layered" || value === "radial";
+}
+
+function readStringRecord(value: unknown): Record<string, string> | null {
+  if (!isRecord(value)) return null;
+  const output: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry !== "string") return null;
+    output[key] = entry;
+  }
+  return output;
+}
+
+function isExportedGraph(value: unknown): value is ExportedGraph {
+  if (!isRecord(value)) return false;
+  const attributes = value.attributes;
+  const nodes = value.nodes;
+  const edges = value.edges;
+  if (!isRecord(attributes)) return false;
+  if (!Array.isArray(nodes) || !Array.isArray(edges)) return false;
+  const nodesValid = nodes.every(
+    (node) => isRecord(node) && typeof node.key === "string" && isRecord(node.attributes),
+  );
+  if (!nodesValid) return false;
+  const edgesValid = edges.every(
+    (edge) =>
+      isRecord(edge) &&
+      typeof edge.key === "string" &&
+      typeof edge.source === "string" &&
+      typeof edge.target === "string" &&
+      isRecord(edge.attributes),
+  );
+  return edgesValid;
+}
+
+function readCameraState(value: unknown): GraphExport["uiState"]["camera"] {
+  if (!isRecord(value)) return null;
+  const x = value.x;
+  const y = value.y;
+  const ratio = value.ratio;
+  const angle = value.angle;
+  if (
+    typeof x === "number" &&
+    typeof y === "number" &&
+    typeof ratio === "number" &&
+    typeof angle === "number"
+  ) {
+    return { x, y, ratio, angle };
+  }
+  return null;
+}
+
+function isGraphExport(value: unknown): value is GraphExport {
+  if (!isRecord(value)) return false;
+  if (value.exportVersion !== 1) return false;
+  if (typeof value.exportedAt !== "string") return false;
+  if (!isExportedGraph(value.graph)) return false;
+  const uiState = value.uiState;
+  if (!isRecord(uiState)) return false;
+  if (!isStringArray(uiState.markedNodeIds)) return false;
+  if (!isExpandMode(uiState.expandMode)) return false;
+  if (!isLayoutMode(uiState.layoutMode)) return false;
+  if (readStringRecord(uiState.notesByNodeId) === null) return false;
+  const camera = uiState.camera;
+  if (camera !== null && readCameraState(camera) === null) return false;
+  return true;
+}
+
 function exportGraph(graph: Graph): ExportedGraph {
   const attributesRaw = graph.getAttributes();
   const attributes = isRecord(attributesRaw) ? attributesRaw : {};
@@ -161,35 +238,18 @@ function relayoutVisibleStructuralNodes(input: {
 }): void {
   const { graph, expandMode, layoutMode } = input;
 
-  const visibleNodes: string[] = [];
-  graph.forEachNode((nodeId, attributes) => {
-    const hidden = isRecord(attributes) ? attributes.hidden : undefined;
-    if (hidden !== true) visibleNodes.push(nodeId);
-  });
-  const visibleSet = new Set(visibleNodes);
-
-  const advisorRoots: string[] = [];
-  visibleNodes.forEach((nodeId) => {
-    const payload = graph.getNodeAttribute(nodeId, "payload");
-    const maybeBusinessType =
-      isRecord(payload) && isRecord(payload.data) && isRecord(payload.data.metaData)
-        ? payload.data.metaData.businessType
-        : null;
-    if (maybeBusinessType === "理專") advisorRoots.push(nodeId);
+  const nodes: string[] = [];
+  graph.forEachNode((nodeId) => {
+    nodes.push(nodeId);
   });
 
-  const roots =
-    advisorRoots.length > 0
-      ? advisorRoots
-      : visibleNodes.filter((nodeId) => {
-          let hasVisibleStructuralParent = false;
-          graph.forEachInEdge(nodeId, (_edge, attributes, source) => {
-            if (hasVisibleStructuralParent) return;
-            if (readEdgeType(attributes) !== "structural") return;
-            if (visibleSet.has(source)) hasVisibleStructuralParent = true;
-          });
-          return !hasVisibleStructuralParent;
-        });
+  const hasStructuralParent = new Set<string>();
+  graph.forEachEdge((_edge, attributes, _source, target) => {
+    if (readEdgeType(attributes) !== "structural") return;
+    hasStructuralParent.add(target);
+  });
+
+  const roots = nodes.filter((nodeId) => !hasStructuralParent.has(nodeId));
 
   roots.sort();
 
@@ -206,20 +266,21 @@ function relayoutVisibleStructuralNodes(input: {
     const parentY = readNumber(graph.getNodeAttribute(parentId, "y")) ?? 0;
     const parentSize = readNumber(graph.getNodeAttribute(parentId, "size")) ?? 10;
 
-    const visibleStructuralChildren: string[] = [];
+    const structuralChildren: string[] = [];
     graph.forEachOutEdge(parentId, (_edge, attributes, _source, target) => {
       if (readEdgeType(attributes) !== "structural") return;
-      if (!visibleSet.has(target)) return;
-      visibleStructuralChildren.push(target);
+      structuralChildren.push(target);
     });
 
-    visibleStructuralChildren.forEach((childId) => {
+    structuralChildren.forEach((childId) => {
       if (!visited.has(childId)) queue.push(childId);
     });
 
-    const movableChildren = visibleStructuralChildren.filter(
-      (childId) => !isPinned(graph.getNodeAttribute(childId, "pinned")),
-    );
+    const movableChildren = structuralChildren.filter((childId) => {
+      const hidden = graph.getNodeAttribute(childId, "hidden");
+      if (hidden === true) return false;
+      return !isPinned(graph.getNodeAttribute(childId, "pinned"));
+    });
 
     if (movableChildren.length === 0) continue;
 
@@ -318,14 +379,17 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     applyTimer: null,
     clearTimer: null,
   });
-  const [layoutMode] = useState<LayoutMode>("layered");
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("layered");
   const [expandMode, setExpandMode] = useState<ExpandMode>("structure");
+  const [isLayoutActive, setIsLayoutActive] = useState(true);
   const [isInitialLayoutReady, setIsInitialLayoutReady] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
   const [markedNodeIds, setMarkedNodeIds] = useState<Set<string>>(new Set());
   const [notesByNodeId, setNotesByNodeId] = useState<Map<string, string>>(new Map());
   const sigmaRef = useRef<Sigma | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const skipNextRelayoutRef = useRef(false);
 
   // Fix: Stabilize this callback to prevent ElkLayout from re-running on every render (e.g. hover)
   const handleLayoutStop = useCallback(() => {
@@ -340,6 +404,10 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   useEffect(() => {
     if (!isInitialLayoutReady) return;
     if (!sigmaRef.current) return;
+    if (skipNextRelayoutRef.current) {
+      skipNextRelayoutRef.current = false;
+      return;
+    }
     relayoutVisibleStructuralNodes({ graph, expandMode, layoutMode });
     sigmaRef.current.refresh();
   }, [expandMode, graph, isInitialLayoutReady, layoutMode]);
@@ -435,6 +503,46 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     };
     downloadJson(exportData, buildExportFileName("graph"));
   }, [expandMode, graph, layoutMode, markedNodeIds, notesByNodeId]);
+
+  const handleImportJsonClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const applyImportedData = useCallback(
+    (payload: GraphExport) => {
+      graph.clear();
+      graph.import(payload.graph);
+      skipNextRelayoutRef.current = true;
+      setIsLayoutActive(false);
+      setMarkedNodeIds(new Set(payload.uiState.markedNodeIds));
+      setNotesByNodeId(new Map(Object.entries(payload.uiState.notesByNodeId)));
+      setExpandMode(payload.uiState.expandMode);
+      setLayoutMode(payload.uiState.layoutMode);
+      const cameraState = payload.uiState.camera;
+      if (cameraState && sigmaRef.current) {
+        sigmaRef.current.getCamera().setState(cameraState);
+      }
+      setContextMenu(null);
+      setDetailNodeId(null);
+      if (sigmaRef.current) sigmaRef.current.refresh();
+    },
+    [graph],
+  );
+
+  const handleImportJsonFile = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      if (!file) return;
+      void (async () => {
+        const text = await file.text();
+        const parsed: unknown = JSON.parse(text);
+        if (!isGraphExport(parsed)) return;
+        applyImportedData(parsed);
+      })();
+    },
+    [applyImportedData],
+  );
 
 	  useEffect(() => {
 	    if (sigmaRef.current) sigmaRef.current.refresh();
@@ -722,7 +830,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
         {(layoutMode === "layered" || layoutMode === "radial") && (
           <ElkLayout 
             layoutType={layoutMode} 
-            isLayoutActive={true} 
+            isLayoutActive={isLayoutActive} 
             onLayoutStop={handleLayoutStop}
           />
         )}
@@ -730,7 +838,9 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
         <div style={{ position: "absolute", top: 10, right: 10, zIndex: 40, display: "flex", gap: 8 }}>
           <button
             type="button"
-            onClick={() => setExpandMode("structure")}
+            onClick={() => {
+              setExpandMode("structure");
+            }}
             style={{
               padding: "6px 12px",
               background: expandMode === "structure" ? "#111827" : "rgba(255,255,255,0.85)",
@@ -744,7 +854,9 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
           </button>
           <button
             type="button"
-            onClick={() => setExpandMode("circle")}
+            onClick={() => {
+              setExpandMode("circle");
+            }}
             style={{
               padding: "6px 12px",
               background: expandMode === "circle" ? "#111827" : "rgba(255,255,255,0.85)",
@@ -784,6 +896,27 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
           >
             匯出JSON
           </button>
+          <button
+            type="button"
+            onClick={handleImportJsonClick}
+            style={{
+              padding: "6px 12px",
+              background: "rgba(255,255,255,0.85)",
+              color: "#111827",
+              border: "1px solid rgba(0,0,0,0.18)",
+              borderRadius: 8,
+              cursor: "pointer",
+            }}
+          >
+            匯入JSON
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            onChange={handleImportJsonFile}
+            style={{ display: "none" }}
+          />
         </div>
 
         <ControlsContainer position="bottom-right">
