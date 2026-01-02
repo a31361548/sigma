@@ -47,7 +47,15 @@ const MARKED_COLOR = "#22c55e";
 const MARKED_BORDER_COLOR = "#15803d";
 const MARKED_BORDER_SIZE = 4;
 
+const NOTE_NODE_PREFIX = "note:";
+const NOTE_EDGE_PREFIX = "note-edge:";
+const NOTE_VERTICAL_GAP = 16;
+const NOTE_COLOR = "#fde68a";
+const NOTE_EDGE_COLOR = "#fcd34d";
+
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const buildNoteNodeId = (parentId: string) => `${NOTE_NODE_PREFIX}${parentId}`;
+const buildNoteEdgeId = (parentId: string) => `${NOTE_EDGE_PREFIX}${parentId}`;
 
 // Edge label 顯示規則：hover 一定顯示；沒 hover 時則在鏡頭夠近才顯示（ratio 越小代表越 zoom-in）
 const EDGE_LABEL_SHOW_MAX_CAMERA_RATIO = 1.8;
@@ -386,6 +394,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
   const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
   const [markedNodeIds, setMarkedNodeIds] = useState<Set<string>>(new Set());
+  const markedNodeIdsRef = useRef<Set<string>>(new Set());
   const [notesByNodeId, setNotesByNodeId] = useState<Map<string, string>>(new Map());
   const sigmaRef = useRef<Sigma | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -402,6 +411,10 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   }, [graph]);
 
   useEffect(() => {
+    markedNodeIdsRef.current = markedNodeIds;
+  }, [markedNodeIds]);
+
+  useEffect(() => {
     if (!isInitialLayoutReady) return;
     if (!sigmaRef.current) return;
     if (skipNextRelayoutRef.current) {
@@ -411,6 +424,78 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     relayoutVisibleStructuralNodes({ graph, expandMode, layoutMode });
     sigmaRef.current.refresh();
   }, [expandMode, graph, isInitialLayoutReady, layoutMode]);
+
+  const syncNoteNodes = useCallback(() => {
+    const noteNodeIdsToRemove: string[] = [];
+    graph.forEachNode((nodeId, attributes) => {
+      if (attributes.isNote !== true) return;
+      const parentId =
+        typeof attributes.noteParentId === "string" ? attributes.noteParentId : nodeId.slice(NOTE_NODE_PREFIX.length);
+      const noteText = notesByNodeId.get(parentId);
+      if (!noteText || noteText.trim() === "") noteNodeIdsToRemove.push(nodeId);
+    });
+
+    noteNodeIdsToRemove.forEach((nodeId) => {
+      graph.dropNode(nodeId);
+    });
+
+    notesByNodeId.forEach((noteText, parentId) => {
+      if (noteText.trim() === "") return;
+      if (!graph.hasNode(parentId)) return;
+
+      const noteNodeId = buildNoteNodeId(parentId);
+      const noteEdgeId = buildNoteEdgeId(parentId);
+      const parentX = readNumber(graph.getNodeAttribute(parentId, "x")) ?? 0;
+      const parentY = readNumber(graph.getNodeAttribute(parentId, "y")) ?? 0;
+      const parentSize = readNumber(graph.getNodeAttribute(parentId, "size")) ?? 8;
+      const noteSize = Math.max(6, Math.round(parentSize * 0.5));
+      const noteMaxWidth = parentSize * 4;
+      const parentHidden = graph.getNodeAttribute(parentId, "hidden") === true;
+      const baseAttributes = {
+        label: noteText,
+        size: noteSize,
+        color: NOTE_COLOR,
+        type: "circle",
+        image: undefined,
+        isNote: true,
+        noteParentId: parentId,
+        noteMaxWidth,
+        hidden: parentHidden,
+        payload: { id: noteNodeId, label: noteText },
+      };
+
+      if (!graph.hasNode(noteNodeId)) {
+        graph.addNode(noteNodeId, {
+          ...baseAttributes,
+          x: parentX,
+          y: parentY + parentSize + noteSize + NOTE_VERTICAL_GAP,
+        });
+      } else {
+        graph.mergeNode(noteNodeId, baseAttributes);
+      }
+
+      if (!graph.hasEdge(noteEdgeId)) {
+        graph.addEdgeWithKey(noteEdgeId, parentId, noteNodeId, {
+          color: NOTE_EDGE_COLOR,
+          size: 1,
+          label: "",
+          type: "arrow",
+          edgeType: "note",
+          zIndex: 0,
+        });
+      } else {
+        graph.setEdgeAttribute(noteEdgeId, "edgeType", "note");
+        graph.setEdgeAttribute(noteEdgeId, "label", "");
+        graph.setEdgeAttribute(noteEdgeId, "color", NOTE_EDGE_COLOR);
+        graph.setEdgeAttribute(noteEdgeId, "size", 1);
+      }
+    });
+  }, [graph, notesByNodeId]);
+
+  useEffect(() => {
+    syncNoteNodes();
+    if (sigmaRef.current) sigmaRef.current.refresh();
+  }, [syncNoteNodes]);
 
   const computeRelatedNodes = useCallback(
     (startNodeId: string, maxHops: number): Set<string> => {
@@ -575,7 +660,11 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   const handleNoteChange = useCallback((nodeId: string, value: string) => {
     setNotesByNodeId((prev) => {
       const next = new Map(prev);
-      next.set(nodeId, value);
+      if (value.trim() === "") {
+        next.delete(nodeId);
+      } else {
+        next.set(nodeId, value);
+      }
       return next;
     });
   }, []);
@@ -585,6 +674,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
       const next = new Set(prev);
       if (next.has(nodeId)) next.delete(nodeId);
       else next.add(nodeId);
+      markedNodeIdsRef.current = next;
       return next;
     });
     if (sigmaRef.current) sigmaRef.current.refresh();
@@ -719,10 +809,14 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     edgeProgramClasses: { curved: EdgeCurveProgram },
     defaultEdgeType: "arrow",
     nodeReducer: (nodeId: string, data: Record<string, unknown>) => {
-      if (data.hidden === true) return { ...data, size: 0, label: "" };
+      const isNoteNode = data.isNote === true;
+      const noteParentId = typeof data.noteParentId === "string" ? data.noteParentId : null;
+      const isParentHidden =
+        isNoteNode && noteParentId ? graph.getNodeAttribute(noteParentId, "hidden") === true : false;
+      if (data.hidden === true || isParentHidden) return { ...data, size: 0, label: "" };
 
       const focus = hoverFocusRef.current;
-      const isMarked = markedNodeIds.has(nodeId);
+      const isMarked = markedNodeIdsRef.current.has(nodeId);
       if (focus && !focus.relatedNodes.has(nodeId) && !isMarked) {
         const mutedColor = "#cbd5e1";
         return {
@@ -748,6 +842,10 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
         };
       }
 
+      if (isNoteNode) {
+        return { ...data, type: "circle", image: undefined, color: NOTE_COLOR, borderColor: NOTE_COLOR, borderSize: 0 };
+      }
+
       const baseColor = typeof data.color === "string" ? data.color : "#94a3b8";
       return { ...data, borderColor: baseColor, borderSize: 0 };
     },
@@ -759,6 +857,22 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
        // Retrieve endpoints from graph because 'data' only contains display attributes
        const source = graph.source(edge);
        const target = graph.target(edge);
+       const edgeType = graph.getEdgeAttribute(edge, "edgeType");
+
+       if (edgeType === "note") {
+         const sourceIsNote = graph.getNodeAttribute(source, "isNote") === true;
+         const targetIsNote = graph.getNodeAttribute(target, "isNote") === true;
+         const sourceParentId = sourceIsNote ? graph.getNodeAttribute(source, "noteParentId") : null;
+         const targetParentId = targetIsNote ? graph.getNodeAttribute(target, "noteParentId") : null;
+         const sourceHidden =
+           (typeof sourceParentId === "string" && graph.getNodeAttribute(sourceParentId, "hidden") === true) ||
+           graph.getNodeAttribute(source, "hidden") === true;
+         const targetHidden =
+           (typeof targetParentId === "string" && graph.getNodeAttribute(targetParentId, "hidden") === true) ||
+           graph.getNodeAttribute(target, "hidden") === true;
+         if (sourceHidden || targetHidden) return { ...data, hidden: true, size: 0 };
+         return { ...data, label: "" };
+       }
        
        // Check visibility of endpoints
        const sourceHidden = graph.getNodeAttribute(source, "hidden");
@@ -785,7 +899,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
 
        return data;
     }
-  }), [graph, markedNodeIds]);
+  }), [graph]);
 
   return (
     <div className="graph-container" onClick={closeContextMenu}>
@@ -996,6 +1110,8 @@ const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode
       const pos = sigma.viewportToGraph({ x: event.clientX, y: event.clientY });
       sigma.getGraph().setNodeAttribute(draggedNode, "x", pos.x);
       sigma.getGraph().setNodeAttribute(draggedNode, "y", pos.y);
+      graph.setNodeAttribute(draggedNode, "x", pos.x);
+      graph.setNodeAttribute(draggedNode, "y", pos.y);
       didMoveRef.current = true;
       event.preventDefault();
       event.stopPropagation();
@@ -1005,6 +1121,7 @@ const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode
       if (!isDragging) return;
       if (draggedNode && didMoveRef.current) {
         sigma.getGraph().setNodeAttribute(draggedNode, "pinned", true);
+        graph.setNodeAttribute(draggedNode, "pinned", true);
       }
       setIsDragging(false);
       setDraggedNode(null);
@@ -1036,6 +1153,7 @@ const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode
       }
       if (draggedNode && didMoveRef.current) {
         sigma.getGraph().setNodeAttribute(draggedNode, "pinned", true);
+        graph.setNodeAttribute(draggedNode, "pinned", true);
       }
       setIsDragging(false);
       setDraggedNode(null);
