@@ -77,6 +77,7 @@ type GraphExport = {
   uiState: {
     markedNodeIds: string[];
     notesByNodeId: Record<string, string>;
+    notePositions?: Record<string, { x: number; y: number }>;
     expandMode: ExpandMode;
     layoutMode: LayoutMode;
     camera: { x: number; y: number; ratio: number; angle: number } | null;
@@ -132,6 +133,22 @@ function readStringRecord(value: unknown): Record<string, string> | null {
   return output;
 }
 
+function readNotePositionsRecord(
+  value: unknown,
+): Record<string, { x: number; y: number }> | null {
+  if (value === undefined) return {};
+  if (!isRecord(value)) return null;
+  const output: Record<string, { x: number; y: number }> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (!isRecord(entry)) return null;
+    const x = entry.x;
+    const y = entry.y;
+    if (typeof x !== "number" || typeof y !== "number") return null;
+    output[key] = { x, y };
+  }
+  return output;
+}
+
 function isExportedGraph(value: unknown): value is ExportedGraph {
   if (!isRecord(value)) return false;
   const attributes = value.attributes;
@@ -182,6 +199,7 @@ function isGraphExport(value: unknown): value is GraphExport {
   if (!isExpandMode(uiState.expandMode)) return false;
   if (!isLayoutMode(uiState.layoutMode)) return false;
   if (readStringRecord(uiState.notesByNodeId) === null) return false;
+  if (readNotePositionsRecord(uiState.notePositions) === null) return false;
   const camera = uiState.camera;
   if (camera !== null && readCameraState(camera) === null) return false;
   return true;
@@ -212,6 +230,16 @@ function exportGraph(graph: Graph): ExportedGraph {
 function buildNotesRecord(notesByNodeId: Map<string, string>): Record<string, string> {
   const output: Record<string, string> = {};
   notesByNodeId.forEach((value, key) => {
+    output[key] = value;
+  });
+  return output;
+}
+
+function buildNotePositionsRecord(
+  notePositionsById: Map<string, { x: number; y: number }>,
+): Record<string, { x: number; y: number }> {
+  const output: Record<string, { x: number; y: number }> = {};
+  notePositionsById.forEach((value, key) => {
     output[key] = value;
   });
   return output;
@@ -396,6 +424,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   const [markedNodeIds, setMarkedNodeIds] = useState<Set<string>>(new Set());
   const markedNodeIdsRef = useRef<Set<string>>(new Set());
   const [notesByNodeId, setNotesByNodeId] = useState<Map<string, string>>(new Map());
+  const [notePositionsById, setNotePositionsById] = useState<Map<string, { x: number; y: number }>>(new Map());
   const sigmaRef = useRef<Sigma | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const skipNextRelayoutRef = useRef(false);
@@ -426,71 +455,84 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   }, [expandMode, graph, isInitialLayoutReady, layoutMode]);
 
   const syncNoteNodes = useCallback(() => {
-    const noteNodeIdsToRemove: string[] = [];
-    graph.forEachNode((nodeId, attributes) => {
-      if (attributes.isNote !== true) return;
-      const parentId =
-        typeof attributes.noteParentId === "string" ? attributes.noteParentId : nodeId.slice(NOTE_NODE_PREFIX.length);
-      const noteText = notesByNodeId.get(parentId);
-      if (!noteText || noteText.trim() === "") noteNodeIdsToRemove.push(nodeId);
+    const graphs = [graph];
+    const sigmaGraph = sigmaRef.current?.getGraph();
+    if (sigmaGraph && sigmaGraph !== graph) graphs.push(sigmaGraph);
+
+    graphs.forEach((targetGraph) => {
+      const noteNodeIdsToRemove: string[] = [];
+      targetGraph.forEachNode((nodeId, attributes) => {
+        if (attributes.isNote !== true) return;
+        const parentId =
+          typeof attributes.noteParentId === "string"
+            ? attributes.noteParentId
+            : nodeId.slice(NOTE_NODE_PREFIX.length);
+        const noteText = notesByNodeId.get(parentId);
+        if (!noteText || noteText.trim() === "") noteNodeIdsToRemove.push(nodeId);
+      });
+
+      noteNodeIdsToRemove.forEach((nodeId) => {
+        targetGraph.dropNode(nodeId);
+      });
+
+      notesByNodeId.forEach((noteText, parentId) => {
+        if (noteText.trim() === "") return;
+        if (!targetGraph.hasNode(parentId)) return;
+
+        const noteNodeId = buildNoteNodeId(parentId);
+        const noteEdgeId = buildNoteEdgeId(parentId);
+        const parentX = readNumber(targetGraph.getNodeAttribute(parentId, "x")) ?? 0;
+        const parentY = readNumber(targetGraph.getNodeAttribute(parentId, "y")) ?? 0;
+        const parentSize = readNumber(targetGraph.getNodeAttribute(parentId, "size")) ?? 8;
+        const noteSize = Math.max(6, Math.round(parentSize * 0.5));
+        const noteMaxWidth = parentSize * 4;
+        const savedPosition = notePositionsById.get(noteNodeId);
+        const noteX = savedPosition?.x ?? parentX;
+        const noteY = savedPosition?.y ?? parentY - parentSize - noteSize - NOTE_VERTICAL_GAP;
+        const parentHidden = targetGraph.getNodeAttribute(parentId, "hidden") === true;
+        const baseAttributes = {
+          label: noteText,
+          size: noteSize,
+          color: NOTE_COLOR,
+          type: "circle",
+          image: undefined,
+          isNote: true,
+          noteParentId: parentId,
+          noteMaxWidth,
+          hidden: parentHidden,
+          payload: { id: noteNodeId, label: noteText },
+        };
+
+        if (!targetGraph.hasNode(noteNodeId)) {
+          targetGraph.addNode(noteNodeId, {
+            ...baseAttributes,
+            x: noteX,
+            y: noteY,
+          });
+        } else {
+          targetGraph.mergeNode(noteNodeId, baseAttributes);
+          targetGraph.setNodeAttribute(noteNodeId, "x", noteX);
+          targetGraph.setNodeAttribute(noteNodeId, "y", noteY);
+        }
+
+        if (!targetGraph.hasEdge(noteEdgeId)) {
+          targetGraph.addEdgeWithKey(noteEdgeId, parentId, noteNodeId, {
+            color: NOTE_EDGE_COLOR,
+            size: 1,
+            label: "",
+            type: "arrow",
+            edgeType: "note",
+            zIndex: 0,
+          });
+        } else {
+          targetGraph.setEdgeAttribute(noteEdgeId, "edgeType", "note");
+          targetGraph.setEdgeAttribute(noteEdgeId, "label", "");
+          targetGraph.setEdgeAttribute(noteEdgeId, "color", NOTE_EDGE_COLOR);
+          targetGraph.setEdgeAttribute(noteEdgeId, "size", 1);
+        }
+      });
     });
-
-    noteNodeIdsToRemove.forEach((nodeId) => {
-      graph.dropNode(nodeId);
-    });
-
-    notesByNodeId.forEach((noteText, parentId) => {
-      if (noteText.trim() === "") return;
-      if (!graph.hasNode(parentId)) return;
-
-      const noteNodeId = buildNoteNodeId(parentId);
-      const noteEdgeId = buildNoteEdgeId(parentId);
-      const parentX = readNumber(graph.getNodeAttribute(parentId, "x")) ?? 0;
-      const parentY = readNumber(graph.getNodeAttribute(parentId, "y")) ?? 0;
-      const parentSize = readNumber(graph.getNodeAttribute(parentId, "size")) ?? 8;
-      const noteSize = Math.max(6, Math.round(parentSize * 0.5));
-      const noteMaxWidth = parentSize * 4;
-      const parentHidden = graph.getNodeAttribute(parentId, "hidden") === true;
-      const baseAttributes = {
-        label: noteText,
-        size: noteSize,
-        color: NOTE_COLOR,
-        type: "circle",
-        image: undefined,
-        isNote: true,
-        noteParentId: parentId,
-        noteMaxWidth,
-        hidden: parentHidden,
-        payload: { id: noteNodeId, label: noteText },
-      };
-
-      if (!graph.hasNode(noteNodeId)) {
-        graph.addNode(noteNodeId, {
-          ...baseAttributes,
-          x: parentX,
-          y: parentY + parentSize + noteSize + NOTE_VERTICAL_GAP,
-        });
-      } else {
-        graph.mergeNode(noteNodeId, baseAttributes);
-      }
-
-      if (!graph.hasEdge(noteEdgeId)) {
-        graph.addEdgeWithKey(noteEdgeId, parentId, noteNodeId, {
-          color: NOTE_EDGE_COLOR,
-          size: 1,
-          label: "",
-          type: "arrow",
-          edgeType: "note",
-          zIndex: 0,
-        });
-      } else {
-        graph.setEdgeAttribute(noteEdgeId, "edgeType", "note");
-        graph.setEdgeAttribute(noteEdgeId, "label", "");
-        graph.setEdgeAttribute(noteEdgeId, "color", NOTE_EDGE_COLOR);
-        graph.setEdgeAttribute(noteEdgeId, "size", 1);
-      }
-    });
-  }, [graph, notesByNodeId]);
+  }, [graph, notePositionsById, notesByNodeId]);
 
   useEffect(() => {
     syncNoteNodes();
@@ -499,13 +541,17 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
 
   const computeRelatedNodes = useCallback(
     (startNodeId: string, maxHops: number): Set<string> => {
+      const liveGraph = sigmaRef.current?.getGraph() ?? graph;
+      if (!liveGraph.hasNode(startNodeId)) return new Set();
+
       const related = new Set<string>([startNodeId]);
       let frontier: string[] = [startNodeId];
 
       for (let depth = 0; depth < maxHops; depth += 1) {
         const nextFrontier: string[] = [];
         frontier.forEach((nodeId) => {
-          graph.forEachNeighbor(nodeId, (neighborId) => {
+          if (!liveGraph.hasNode(nodeId)) return;
+          liveGraph.forEachNeighbor(nodeId, (neighborId) => {
             if (related.has(neighborId)) return;
             related.add(neighborId);
             nextFrontier.push(neighborId);
@@ -579,6 +625,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
       uiState: {
         markedNodeIds: Array.from(markedNodeIds),
         notesByNodeId: buildNotesRecord(notesByNodeId),
+        notePositions: buildNotePositionsRecord(notePositionsById),
         expandMode,
         layoutMode,
         camera: cameraState
@@ -587,7 +634,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
       },
     };
     downloadJson(exportData, buildExportFileName("graph"));
-  }, [expandMode, graph, layoutMode, markedNodeIds, notesByNodeId]);
+  }, [expandMode, graph, layoutMode, markedNodeIds, notePositionsById, notesByNodeId]);
 
   const handleImportJsonClick = useCallback(() => {
     fileInputRef.current?.click();
@@ -597,10 +644,21 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     (payload: GraphExport) => {
       graph.clear();
       graph.import(payload.graph);
+      const liveGraph = sigmaRef.current?.getGraph();
+      if (liveGraph && liveGraph !== graph) {
+        liveGraph.clear();
+        liveGraph.import(payload.graph);
+      }
       skipNextRelayoutRef.current = true;
       setIsLayoutActive(false);
       setMarkedNodeIds(new Set(payload.uiState.markedNodeIds));
       setNotesByNodeId(new Map(Object.entries(payload.uiState.notesByNodeId)));
+      const notePositions = readNotePositionsRecord(payload.uiState.notePositions) ?? {};
+      const notePositionsMap = new Map<string, { x: number; y: number }>();
+      Object.entries(notePositions).forEach(([key, entry]) => {
+        notePositionsMap.set(key, { x: entry.x, y: entry.y });
+      });
+      setNotePositionsById(notePositionsMap);
       setExpandMode(payload.uiState.expandMode);
       setLayoutMode(payload.uiState.layoutMode);
       const cameraState = payload.uiState.camera;
@@ -632,6 +690,17 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
 	  useEffect(() => {
 	    if (sigmaRef.current) sigmaRef.current.refresh();
 	  }, [layoutMode]);
+
+  const handleNotePositionCommit = useCallback(
+    (noteNodeId: string, position: { x: number; y: number }) => {
+      setNotePositionsById((prev) => {
+        const next = new Map(prev);
+        next.set(noteNodeId, position);
+        return next;
+      });
+    },
+    [],
+  );
 
   type SigmaRightClickNodeEvent = { node: string; event: { x: number; y: number; original: Event } };
   const isSigmaRightClickNodeEvent = (value: unknown): value is SigmaRightClickNodeEvent => {
@@ -667,6 +736,14 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
       }
       return next;
     });
+    if (value.trim() === "") {
+      const noteNodeId = buildNoteNodeId(nodeId);
+      setNotePositionsById((prev) => {
+        const next = new Map(prev);
+        next.delete(noteNodeId);
+        return next;
+      });
+    }
   }, []);
 
   const toggleMarkedNode = useCallback((nodeId: string) => {
@@ -817,7 +894,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
 
       const focus = hoverFocusRef.current;
       const isMarked = markedNodeIdsRef.current.has(nodeId);
-      if (focus && !focus.relatedNodes.has(nodeId) && !isMarked) {
+      if (focus && !focus.relatedNodes.has(nodeId) && !isMarked && !isNoteNode) {
         const mutedColor = "#cbd5e1";
         return {
           ...data,
@@ -919,6 +996,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
           onHoverChange={handleHover}
           onEdgeHoverChange={handleEdgeHoverChange}
           onRightClickNode={handleRightClickNode}
+          onNotePositionCommit={handleNotePositionCommit}
           setSigma={(s) => {
             sigmaRef.current = s;
           }}
@@ -1061,10 +1139,18 @@ interface GraphEventsProps {
   onHoverChange: (node: ISigmaNode | null, event?: MouseEvent) => void;
   onEdgeHoverChange?: (edgeId: string | null) => void;
   onRightClickNode?: (event: unknown) => void;
+  onNotePositionCommit?: (noteNodeId: string, position: { x: number; y: number }) => void;
   setSigma?: (sigma: Sigma) => void;
 }
 
-const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode, setSigma }: GraphEventsProps) => {
+const GraphEvents = ({
+  graph,
+  onHoverChange,
+  onEdgeHoverChange,
+  onRightClickNode,
+  onNotePositionCommit,
+  setSigma,
+}: GraphEventsProps) => {
   const loadGraph = useLoadGraph();
   const registerEvents = useRegisterEvents();
   const sigma = useSigma();
@@ -1122,6 +1208,18 @@ const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode
       if (draggedNode && didMoveRef.current) {
         sigma.getGraph().setNodeAttribute(draggedNode, "pinned", true);
         graph.setNodeAttribute(draggedNode, "pinned", true);
+        if (onNotePositionCommit) {
+          const liveGraph = sigma.getGraph();
+          if (!liveGraph.hasNode(draggedNode)) return;
+          const isNoteNode = liveGraph.getNodeAttribute(draggedNode, "isNote") === true;
+          if (isNoteNode) {
+            const x = readNumber(liveGraph.getNodeAttribute(draggedNode, "x"));
+            const y = readNumber(liveGraph.getNodeAttribute(draggedNode, "y"));
+            if (x !== null && y !== null) {
+              onNotePositionCommit(draggedNode, { x, y });
+            }
+          }
+        }
       }
       setIsDragging(false);
       setDraggedNode(null);
@@ -1143,7 +1241,7 @@ const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode
       container.removeEventListener("mouseleave", stopDragging);
       container.removeEventListener("contextmenu", handleContextMenu);
     };
-  }, [draggedNode, isDragging, sigma]);
+  }, [draggedNode, graph, isDragging, onNotePositionCommit, sigma]);
 
   useEffect(() => {
     const stopDragging = () => {
@@ -1154,6 +1252,18 @@ const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode
       if (draggedNode && didMoveRef.current) {
         sigma.getGraph().setNodeAttribute(draggedNode, "pinned", true);
         graph.setNodeAttribute(draggedNode, "pinned", true);
+        if (onNotePositionCommit) {
+          const liveGraph = sigma.getGraph();
+          if (!liveGraph.hasNode(draggedNode)) return;
+          const isNoteNode = liveGraph.getNodeAttribute(draggedNode, "isNote") === true;
+          if (isNoteNode) {
+            const x = readNumber(liveGraph.getNodeAttribute(draggedNode, "x"));
+            const y = readNumber(liveGraph.getNodeAttribute(draggedNode, "y"));
+            if (x !== null && y !== null) {
+              onNotePositionCommit(draggedNode, { x, y });
+            }
+          }
+        }
       }
       setIsDragging(false);
       setDraggedNode(null);
@@ -1182,14 +1292,26 @@ const GraphEvents = ({ graph, onHoverChange, onEdgeHoverChange, onRightClickNode
       downStage: stopDragging,
       leaveNode: () => onHoverChange(null),
       enterNode: (event) => {
-        const payload = graph.getNodeAttribute(event.node, "payload") as ISigmaNode | undefined;
+        const liveGraph = sigma.getGraph();
+        if (!liveGraph.hasNode(event.node)) return;
+        const payload = liveGraph.getNodeAttribute(event.node, "payload") as ISigmaNode | undefined;
         const mouse = event.event.original as MouseEvent;
         if (payload && mouse) {
           onHoverChange(payload, mouse);
         }
       },
     });
-  }, [draggedNode, graph, isDragging, onHoverChange, onEdgeHoverChange, registerEvents, sigma, onRightClickNode]);
+  }, [
+    draggedNode,
+    graph,
+    isDragging,
+    onEdgeHoverChange,
+    onHoverChange,
+    onNotePositionCommit,
+    onRightClickNode,
+    registerEvents,
+    sigma,
+  ]);
 
   return null;
 };

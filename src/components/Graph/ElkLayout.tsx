@@ -92,6 +92,7 @@ function buildAdvisorGroups(graph: DirectedGraphLike): AdvisorGroup[] {
   const businessTypeCache = new Map<NodeId, BusinessType | null>();
 
   graph.forEachNode((nodeId) => {
+    if (graph.getNodeAttribute(nodeId, "isNote") === true) return;
     const businessType = getBusinessType(graph, nodeId, businessTypeCache);
     if (businessType === "理專") advisorIdsInOrder.push(nodeId);
   });
@@ -114,6 +115,7 @@ function buildAdvisorGroups(graph: DirectedGraphLike): AdvisorGroup[] {
   const byGroup = new Map<string, { advisorId: NodeId; advisorOrderIndex: number; nodeIds: NodeId[] }>();
 
   graph.forEachNode((nodeId) => {
+    if (graph.getNodeAttribute(nodeId, "isNote") === true) return;
     const advisor = inferAdvisor(graph, nodeId, businessTypeCache, nodeAdvisorCache);
     if (!advisor) return;
     const groupId = disjointSet.find(advisor);
