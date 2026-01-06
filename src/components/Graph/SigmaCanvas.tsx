@@ -924,7 +924,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
       }
 
       const baseColor = typeof data.color === "string" ? data.color : "#94a3b8";
-      return { ...data, borderColor: baseColor, borderSize: 0 };
+      return { ...data, color: baseColor, borderColor: baseColor, borderSize: 0 };
     },
     edgeReducer: (edge: string, data: Record<string, unknown>) => {
        // Use captured 'graph' instance from closure
