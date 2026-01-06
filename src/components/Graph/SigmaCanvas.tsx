@@ -52,6 +52,11 @@ const NOTE_EDGE_PREFIX = "note-edge:";
 const NOTE_VERTICAL_GAP = 16;
 const NOTE_COLOR = "#fde68a";
 const NOTE_EDGE_COLOR = "#fcd34d";
+const FREE_TEXT_NODE_PREFIX = "free-text:";
+const FREE_TEXT_NODE_COLOR = "rgba(0, 0, 0, 0)";
+const FREE_TEXT_LABEL_COLOR = "#dc2626";
+const FREE_TEXT_BASE_WIDTH = 140;
+const FREE_TEXT_MAX_WIDTH = 520;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const buildNoteNodeId = (parentId: string) => `${NOTE_NODE_PREFIX}${parentId}`;
@@ -82,6 +87,14 @@ type GraphExport = {
     layoutMode: LayoutMode;
     camera: { x: number; y: number; ratio: number; angle: number } | null;
   };
+};
+
+type FreeTextDraft = {
+  screenX: number;
+  screenY: number;
+  graphX: number;
+  graphY: number;
+  value: string;
 };
 
 import type Sigma from "sigma";
@@ -121,6 +134,14 @@ function isExpandMode(value: unknown): value is ExpandMode {
 
 function isLayoutMode(value: unknown): value is LayoutMode {
   return value === "layered" || value === "radial";
+}
+
+function readMouseEvent(value: unknown): MouseEvent | null {
+  if (value instanceof MouseEvent) return value;
+  if (!isRecord(value)) return null;
+  const original = value.original;
+  if (original instanceof MouseEvent) return original;
+  return null;
 }
 
 function readStringRecord(value: unknown): Record<string, string> | null {
@@ -425,8 +446,11 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
   const markedNodeIdsRef = useRef<Set<string>>(new Set());
   const [notesByNodeId, setNotesByNodeId] = useState<Map<string, string>>(new Map());
   const [notePositionsById, setNotePositionsById] = useState<Map<string, { x: number; y: number }>>(new Map());
+  const [freeTextDraft, setFreeTextDraft] = useState<FreeTextDraft | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const freeTextInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const freeTextIdRef = useRef(0);
   const skipNextRelayoutRef = useRef(false);
 
   // Fix: Stabilize this callback to prevent ElkLayout from re-running on every render (e.g. hover)
@@ -453,6 +477,11 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     relayoutVisibleStructuralNodes({ graph, expandMode, layoutMode });
     sigmaRef.current.refresh();
   }, [expandMode, graph, isInitialLayoutReady, layoutMode]);
+
+  useEffect(() => {
+    if (!freeTextDraft) return;
+    freeTextInputRef.current?.focus();
+  }, [freeTextDraft]);
 
   const syncNoteNodes = useCallback(() => {
     const graphs = [graph];
@@ -702,6 +731,67 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     [],
   );
 
+  const createFreeTextNodeId = useCallback(() => {
+    freeTextIdRef.current += 1;
+    return `${FREE_TEXT_NODE_PREFIX}${Date.now()}-${freeTextIdRef.current}`;
+  }, []);
+
+  const handleFreeTextConfirm = useCallback(() => {
+    if (!freeTextDraft) return;
+    const text = freeTextDraft.value.trim();
+    if (text === "") {
+      setFreeTextDraft(null);
+      return;
+    }
+
+    const size = clamp(6 + Math.floor(text.length / 12), 6, 14);
+    const labelMaxWidth = clamp(
+      FREE_TEXT_BASE_WIDTH + text.length * 6 + size * 8,
+      FREE_TEXT_BASE_WIDTH,
+      FREE_TEXT_MAX_WIDTH,
+    );
+    const nodeId = createFreeTextNodeId();
+    const nodePayload: ISigmaNode = { id: nodeId, label: text };
+    const baseAttributes = {
+      label: text,
+      x: freeTextDraft.graphX,
+      y: freeTextDraft.graphY,
+      size,
+      color: FREE_TEXT_NODE_COLOR,
+      type: "circle",
+      image: undefined,
+      isFreeText: true,
+      labelColor: FREE_TEXT_LABEL_COLOR,
+      labelMaxWidth,
+      payload: nodePayload,
+      hidden: false,
+    };
+
+    const graphs = [graph];
+    const liveGraph = sigmaRef.current?.getGraph();
+    if (liveGraph && liveGraph !== graph) graphs.push(liveGraph);
+
+    graphs.forEach((targetGraph) => {
+      if (!targetGraph.hasNode(nodeId)) {
+        targetGraph.addNode(nodeId, baseAttributes);
+      } else {
+        targetGraph.mergeNode(nodeId, baseAttributes);
+      }
+    });
+
+    setFreeTextDraft(null);
+    if (sigmaRef.current) sigmaRef.current.refresh();
+  }, [createFreeTextNodeId, freeTextDraft, graph]);
+
+  const handleFreeTextCancel = useCallback(() => {
+    setFreeTextDraft(null);
+  }, []);
+
+  const handleFreeTextChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
+    const value = event.target.value;
+    setFreeTextDraft((prev) => (prev ? { ...prev, value } : prev));
+  }, []);
+
   type SigmaRightClickNodeEvent = { node: string; event: { x: number; y: number; original: Event } };
   const isSigmaRightClickNodeEvent = (value: unknown): value is SigmaRightClickNodeEvent => {
     if (!isRecord(value)) return false;
@@ -717,6 +807,37 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     }
     setContextMenu({ x: event.event.x, y: event.event.y, nodeId: event.node });
   }, []);
+
+  const handleStageDoubleClick = useCallback(
+    (event: unknown) => {
+      if (!sigmaRef.current) return;
+      if (!isRecord(event)) return;
+      const payloadEvent = isRecord(event.event) ? event.event : null;
+      if (payloadEvent && typeof payloadEvent.preventSigmaDefault === "function") {
+        payloadEvent.preventSigmaDefault();
+      }
+      const mouseEvent = readMouseEvent(payloadEvent ?? event.event);
+      if (!mouseEvent) return;
+      const container = sigmaRef.current.getContainer();
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const screenX = mouseEvent.clientX - rect.left;
+      const screenY = mouseEvent.clientY - rect.top;
+      const graphPos = sigmaRef.current.viewportToGraph({
+        x: mouseEvent.clientX,
+        y: mouseEvent.clientY,
+      });
+      setContextMenu(null);
+      setFreeTextDraft({
+        screenX,
+        screenY,
+        graphX: graphPos.x,
+        graphY: graphPos.y,
+        value: "",
+      });
+    },
+    [],
+  );
 
   const closeContextMenu = useCallback(() => {
       setContextMenu(null);
@@ -887,14 +1008,28 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
     defaultEdgeType: "arrow",
     nodeReducer: (nodeId: string, data: Record<string, unknown>) => {
       const isNoteNode = data.isNote === true;
+      const isFreeText = data.isFreeText === true;
       const noteParentId = typeof data.noteParentId === "string" ? data.noteParentId : null;
       const isParentHidden =
         isNoteNode && noteParentId ? graph.getNodeAttribute(noteParentId, "hidden") === true : false;
       if (data.hidden === true || isParentHidden) return { ...data, size: 0, label: "" };
 
+      if (isFreeText) {
+        return {
+          ...data,
+          type: "circle",
+          image: undefined,
+          color: FREE_TEXT_NODE_COLOR,
+          borderColor: FREE_TEXT_NODE_COLOR,
+          borderSize: 0,
+          forceLabel: true,
+          zIndex: 30,
+        };
+      }
+
       const focus = hoverFocusRef.current;
       const isMarked = markedNodeIdsRef.current.has(nodeId);
-      if (focus && !focus.relatedNodes.has(nodeId) && !isMarked && !isNoteNode) {
+      if (focus && !focus.relatedNodes.has(nodeId) && !isMarked && !isNoteNode && !isFreeText) {
         const mutedColor = "#cbd5e1";
         return {
           ...data,
@@ -996,6 +1131,7 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
           onHoverChange={handleHover}
           onEdgeHoverChange={handleEdgeHoverChange}
           onRightClickNode={handleRightClickNode}
+          onStageDoubleClick={handleStageDoubleClick}
           onNotePositionCommit={handleNotePositionCommit}
           setSigma={(s) => {
             sigmaRef.current = s;
@@ -1016,6 +1152,75 @@ export const SigmaCanvas = ({ nodes, edges }: SigmaCanvasProps) => {
                 onShowDetails={(id) => setDetailNodeId(id)}
                 onToggleMark={toggleMarkedNode}
             />
+        )}
+        {freeTextDraft && (
+          <div
+            style={{
+              position: "absolute",
+              left: freeTextDraft.screenX,
+              top: freeTextDraft.screenY,
+              transform: "translate(8px, 8px)",
+              zIndex: 60,
+              background: "rgba(255,255,255,0.95)",
+              border: "1px solid rgba(0,0,0,0.15)",
+              borderRadius: 10,
+              padding: 10,
+              width: 280,
+              boxShadow: "0 8px 20px rgba(0,0,0,0.15)",
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#111827" }}>新增文字註記</div>
+            <textarea
+              ref={freeTextInputRef}
+              value={freeTextDraft.value}
+              onChange={handleFreeTextChange}
+              rows={4}
+              placeholder="輸入文字..."
+              style={{
+                marginTop: 8,
+                width: "100%",
+                resize: "vertical",
+                padding: 8,
+                borderRadius: 8,
+                border: "1px solid rgba(15, 23, 42, 0.2)",
+                background: "rgba(255,255,255,0.95)",
+                color: "#0f172a",
+                fontSize: 13,
+                lineHeight: 1.5,
+              }}
+            />
+            <div style={{ marginTop: 8, display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                onClick={handleFreeTextCancel}
+                style={{
+                  padding: "4px 10px",
+                  borderRadius: 6,
+                  border: "1px solid rgba(0,0,0,0.18)",
+                  background: "rgba(255,255,255,0.85)",
+                  color: "#111827",
+                  cursor: "pointer",
+                }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleFreeTextConfirm}
+                style={{
+                  padding: "4px 10px",
+                  borderRadius: 6,
+                  border: "1px solid rgba(0,0,0,0.18)",
+                  background: "#111827",
+                  color: "#ffffff",
+                  cursor: "pointer",
+                }}
+              >
+                確認
+              </button>
+            </div>
+          </div>
         )}
 {/* ... existing layouts */}
 
@@ -1139,6 +1344,7 @@ interface GraphEventsProps {
   onHoverChange: (node: ISigmaNode | null, event?: MouseEvent) => void;
   onEdgeHoverChange?: (edgeId: string | null) => void;
   onRightClickNode?: (event: unknown) => void;
+  onStageDoubleClick?: (event: unknown) => void;
   onNotePositionCommit?: (noteNodeId: string, position: { x: number; y: number }) => void;
   setSigma?: (sigma: Sigma) => void;
 }
@@ -1148,6 +1354,7 @@ const GraphEvents = ({
   onHoverChange,
   onEdgeHoverChange,
   onRightClickNode,
+  onStageDoubleClick,
   onNotePositionCommit,
   setSigma,
 }: GraphEventsProps) => {
@@ -1287,6 +1494,9 @@ const GraphEvents = ({
       },
       rightClickNode(e) {
           if (onRightClickNode) onRightClickNode(e);
+      },
+      doubleClickStage(e) {
+        if (onStageDoubleClick) onStageDoubleClick(e);
       },
       upNode: stopDragging,
       downStage: stopDragging,

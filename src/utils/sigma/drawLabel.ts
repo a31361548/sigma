@@ -10,15 +10,18 @@ export default function drawLabel(
   const font = settings.labelFont;
   const weight = settings.labelWeight;
   const label = data.label || ""; // Handle null/undefined label
-  const isNoteNode = (data as Record<string, unknown>).isNote === true;
+  const metadata = data as Record<string, unknown>;
+  const isNoteNode = metadata.isNote === true;
   const noteMaxWidth =
-    typeof (data as Record<string, unknown>).noteMaxWidth === "number"
-      ? ((data as Record<string, unknown>).noteMaxWidth as number)
-      : null;
+    typeof metadata.noteMaxWidth === "number" ? (metadata.noteMaxWidth as number) : null;
+  const labelMaxWidth =
+    typeof metadata.labelMaxWidth === "number" ? (metadata.labelMaxWidth as number) : null;
+  const labelColor =
+    typeof metadata.labelColor === "string" ? (metadata.labelColor as string) : null;
 
   context.font = `${weight} ${size}px ${font}`;
 
-  context.fillStyle = settings.labelColor.color || "#000000"; // Handle undefined color to verify renderer usage
+  context.fillStyle = labelColor ?? settings.labelColor.color ?? "#000000";
 
   // Draw label below the node
   context.textAlign = "center";
@@ -52,8 +55,11 @@ export default function drawLabel(
     return lines;
   };
 
-  if (isNoteNode && noteMaxWidth && noteMaxWidth > 0) {
-    const lines = wrapLines(label, noteMaxWidth);
+  const maxWidth =
+    isNoteNode && noteMaxWidth && noteMaxWidth > 0 ? noteMaxWidth : labelMaxWidth;
+
+  if (typeof maxWidth === "number" && maxWidth > 0) {
+    const lines = wrapLines(label, maxWidth);
     const lineHeight = size + 4;
     lines.forEach((line, index) => {
       context.fillText(line, x, y + index * lineHeight);
